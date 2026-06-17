@@ -60,32 +60,7 @@
     return null;
   }
 
-  /**
-   * Actively request repo context from the host via context:getRepo.
-   * This is the reliable fallback when the host's push events are lost
-   * due to a timing race (events fire before iframe listeners are ready).
-   */
-  async function fetchRepoContext(b: WidgetBridge): Promise<RepoContext | null> {
-    try {
-      dbg('fallback: requesting context:getRepo…');
-      const res: any = await b.request('context:getRepo', {});
-      dbg(`fallback: got response: ${JSON.stringify(res).slice(0, 200)}`);
-      if (res?.status === 'ok' && res.repoContext) {
-        const normalized = normalizeRepoContext(res.repoContext);
-        dbg(`fallback: normalized to ${JSON.stringify(normalized).slice(0, 200)}`);
-        return normalized;
-      }
-      dbg(`fallback: response did not match — status=${res?.status}, hasRepoContext=${!!res?.repoContext}, hasRepo=${!!res?.repo}`);
-      return null;
-    } catch (err) {
-      dbg(`fallback: error — ${err}`);
-      return null;
-    }
-  }
-
   $effect(() => {
-    let contextReceived = false;
-
     const b = createWidgetBridge({
       targetWindow: window.parent,
       targetOrigin: '*',
@@ -95,40 +70,34 @@
     bridge = b;
     dbg('bridge created, setting up event handlers…');
 
+    // widget:init — sent first by the host; may carry repoContext inline.
     const offInit = b.onEvent('widget:init', (payload) => {
       dbg(`widget:init received: ${JSON.stringify(payload).slice(0, 200)}`);
       initPayload = payload as WidgetInitPayload;
-      // widget:init may carry repoContext inline
       if ((payload as any)?.repoContext) {
         const ctx = normalizeRepoContext((payload as any).repoContext);
         if (ctx) {
-          contextReceived = true;
           repoContext = ctx;
           dbg('widget:init set repoContext');
         }
       }
     });
 
+    // context:repoUpdate — flat RepoContext pushed whenever repo data changes.
     const offRepo = b.onEvent('context:repoUpdate', (ctx) => {
       dbg(`context:repoUpdate received: ${JSON.stringify(ctx).slice(0, 200)}`);
-      contextReceived = true;
       repoContext = normalizeRepoContext(ctx) ?? repoContext;
     });
 
-    // Compatibility: flotilla-budabit host sends context:update with {userPubkey, relays, repo:{...}}
-    // This handles both the current host behaviour and future budabit-sdk-native hosts.
+    // context:update — host sends { userPubkey, relays, repo: { repoPubkey, … } }.
     const offContextUpdate = b.onEvent('context:update', (ctx: any) => {
       dbg(`context:update received: ${JSON.stringify(ctx).slice(0, 200)}`);
       if (!ctx) return;
-      contextReceived = true;
-      // Merge pubkey into initPayload if widget:init hasn't arrived yet
       if (ctx.userPubkey && !initPayload) {
         initPayload = { pubkey: ctx.userPubkey, relays: ctx.relays ?? [], hostVersion: '1.0.0' } as WidgetInitPayload;
       }
-      // Merge repo context if context:repoUpdate hasn't arrived yet
       if (!repoContext) {
-        const nested = ctx.repo ?? ctx;
-        const normalized = normalizeRepoContext(nested);
+        const normalized = normalizeRepoContext(ctx.repo ?? ctx);
         if (normalized) repoContext = normalized;
       }
     });
@@ -136,40 +105,7 @@
     dbg('signalReady() called');
     b.signalReady();
 
-    // Fallback: if the host's push events were lost (timing race), actively
-    // request context via context:getRepo with exponential backoff.
-    // Retries at 500ms, 1.5s, 3.5s, 7.5s — gives the host time to load the
-    // repo Nostr event before each attempt.
-    const RETRY_DELAYS = [500, 1000, 2000, 4000];
-    let retryIdx = 0;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
-
-    function scheduleNextRetry() {
-      if (retryIdx >= RETRY_DELAYS.length) {
-        dbg('fallback: all retries exhausted, giving up');
-        return;
-      }
-      const delay = RETRY_DELAYS[retryIdx++];
-      retryTimer = setTimeout(async () => {
-        retryTimer = null;
-        dbg(`fallback retry ${retryIdx}/${RETRY_DELAYS.length}: contextReceived=${contextReceived}, delay was ${delay}ms`);
-        if (contextReceived) return;
-        const ctx = await fetchRepoContext(b);
-        if (contextReceived) return;
-        if (ctx) {
-          contextReceived = true;
-          repoContext = ctx;
-          dbg('fallback: repoContext set via context:getRepo');
-        } else {
-          scheduleNextRetry();
-        }
-      }, delay);
-    }
-
-    scheduleNextRetry();
-
     return () => {
-      if (retryTimer) clearTimeout(retryTimer);
       offInit();
       offRepo();
       offContextUpdate();
