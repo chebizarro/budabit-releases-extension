@@ -45,11 +45,26 @@
       repoContext = ctx as RepoContext;
     });
 
+    // Compatibility: flotilla-budabit host sends context:update with {userPubkey, relays, repo:{...}}
+    // This handles both the current host behaviour and future budabit-sdk-native hosts.
+    const offContextUpdate = b.onEvent('context:update', (ctx: any) => {
+      if (!ctx) return;
+      // Merge pubkey into initPayload if widget:init hasn't arrived yet
+      if (ctx.userPubkey && !initPayload) {
+        initPayload = { pubkey: ctx.userPubkey, relays: ctx.relays ?? [], hostVersion: '1.0.0' } as WidgetInitPayload;
+      }
+      // Merge repo context if context:repoUpdate hasn't arrived yet
+      if (!repoContext && ctx.repo?.repoNaddr) {
+        repoContext = ctx.repo as RepoContext;
+      }
+    });
+
     b.signalReady();
 
     return () => {
       offInit();
       offRepo();
+      offContextUpdate();
       b.destroy();
       bridge = null;
     };
