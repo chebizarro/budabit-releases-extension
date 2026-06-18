@@ -1,8 +1,13 @@
 <script lang="ts">
   import type { WidgetBridge, RepoContext } from 'budabit-sdk';
   import type { PipelineArtifactData } from '../pipelines.js';
+  import type { SoftwareApplication } from '../types.js';
+  import { CHANNELS } from '../types.js';
   import { loadPipelineArtifacts } from '../pipelines.js';
-  import { buildReleaseEvent } from '../releases.js';
+  import {
+    buildApplicationEvent,
+    createRelease,
+  } from '../releases.js';
   import { publishEvent, getRelays } from '../bridge.js';
   import ArtifactSelector from './ArtifactSelector.svelte';
 
@@ -10,11 +15,12 @@
     bridge: WidgetBridge;
     repo: RepoContext;
     trustedMaintainers: string[];
+    existingApps: SoftwareApplication[];
     onSuccess: () => void;
     onCancel: () => void;
   }
 
-  let { bridge, repo, trustedMaintainers, onSuccess, onCancel }: Props = $props();
+  let { bridge, repo, trustedMaintainers, existingApps, onSuccess, onCancel }: Props = $props();
 
   // ── Pipeline artifact state ───────────────────────────────────────────────
   let pipelineData = $state<PipelineArtifactData | null>(null);
@@ -36,12 +42,32 @@
       });
   });
 
+  // ── App state ─────────────────────────────────────────────────────────────
+  const hasExistingApp = $derived(existingApps.length > 0);
+  const defaultAppId = $derived(
+    existingApps[0]?.appId ?? (repo as any).repoName ?? ''
+  );
+  const defaultAppName = $derived(
+    existingApps[0]?.name ?? (repo as any).repoName ?? ''
+  );
+
+  let appId = $state('');
+  let appName = $state('');
+
+  // Initialize from defaults once available
+  $effect(() => {
+    if (!appId && defaultAppId) appId = defaultAppId;
+    if (!appName && defaultAppName) appName = defaultAppName;
+  });
+
   // ── Form state ────────────────────────────────────────────────────────────
   let version = $state('');
+  let channel = $state<string>('main');
   let releaseNotes = $state('');
   let selectedIds = $state(new Set<string>());
   let submitting = $state(false);
   let submitError = $state<string | null>(null);
+  let publishProgress = $state('');
 
   function toggleArtifact(id: string) {
     const next = new Set(selectedIds);
@@ -54,24 +80,27 @@
   }
 
   const canSubmit = $derived(
-    version.trim().length > 0 && selectedIds.size > 0 && !submitting
+    version.trim().length > 0 &&
+      selectedIds.size > 0 &&
+      appId.trim().length > 0 &&
+      !submitting
   );
 
   async function handleSubmit() {
-    if (!canSubmit || !bridge || !repo?.repoNaddr) return;
+    if (!canSubmit || !bridge || !repo) return;
 
-    // Resolve the consensus artifact event IDs in declaration order
+    // Resolve the consensus artifact objects in declaration order
     const groups = pipelineData?.groups ?? [];
-    const orderedIds: string[] = [];
+    const selectedArtifacts: import('../types.js').Artifact[] = [];
     for (const group of groups) {
       if (!group.consensusHash) continue;
       const artifact = group.sha256Counts.get(group.consensusHash)?.[0];
       if (artifact && selectedIds.has(artifact.eventId)) {
-        orderedIds.push(artifact.eventId);
+        selectedArtifacts.push(artifact);
       }
     }
 
-    if (orderedIds.length === 0) {
+    if (selectedArtifacts.length === 0) {
       submitError = 'No valid artifacts selected.';
       return;
     }
@@ -79,29 +108,47 @@
     submitting = true;
     submitError = null;
 
-    const relays = getRelays(repo.repoRelays);
-    const repoRelay = relays[0] ?? '';
-
-    // Derive commitId from any of the selected artifacts
-    const allArtifacts = pipelineData?.allArtifacts ?? [];
-    const commitId = allArtifacts.find(
-      (a) => selectedIds.has(a.eventId) && a.commitId
-    )?.commitId;
-
-    const event = buildReleaseEvent({
-      version: version.trim(),
-      repoNaddr: repo.repoNaddr,
-      repoRelay,
-      artifactEventIds: orderedIds,
-      releaseNotes: releaseNotes.trim(),
-      commitId,
-    });
+    const relays = getRelays((repo as any).repoRelays);
 
     try {
-      await publishEvent(bridge, event);
+      // Step 1: Create the application event if it doesn't exist
+      if (!hasExistingApp) {
+        publishProgress = 'Publishing application event…';
+        const repoAddr = (repo as any).repoNaddr ?? '';
+        const appEvent = buildApplicationEvent({
+          appId: appId.trim(),
+          name: appName.trim() || appId.trim(),
+          repoAddress: repoAddr,
+          repoRelay: relays[0] ?? '',
+        });
+        await publishEvent(bridge, appEvent, relays);
+      }
+
+      // Step 2: Create kind 3063 assets + kind 30063 release (handled by createRelease)
+      const totalSteps = selectedArtifacts.length + 1;
+      let step = 0;
+
+      // We need to intercept progress, but createRelease is atomic.
+      // For UX, just show a single progress message.
+      publishProgress = `Publishing ${selectedArtifacts.length} asset${selectedArtifacts.length !== 1 ? 's' : ''} and release…`;
+
+      // Derive commitId from selected artifacts
+      const commitId = selectedArtifacts.find((a) => a.commitId)?.commitId;
+
+      await createRelease(bridge, relays, {
+        appId: appId.trim(),
+        version: version.trim(),
+        channel,
+        releaseNotes: releaseNotes.trim(),
+        artifacts: selectedArtifacts,
+        commitId,
+      });
+
+      publishProgress = '';
       onSuccess();
     } catch (err) {
       submitError = err instanceof Error ? err.message : String(err);
+      publishProgress = '';
       submitting = false;
     }
   }
@@ -114,17 +161,64 @@
   </div>
 
   <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
-    <!-- Version -->
-    <div class="field">
-      <label for="version">Version tag <span class="required">*</span></label>
-      <input
-        id="version"
-        type="text"
-        bind:value={version}
-        placeholder="e.g. v1.2.0"
-        required
-        disabled={submitting}
-      />
+    <!-- Application identifier -->
+    {#if !hasExistingApp}
+      <fieldset class="app-setup">
+        <legend>Application Setup</legend>
+        <p class="setup-hint">No application event found for this repository. One will be created with your first release.</p>
+        <div class="field-row">
+          <div class="field">
+            <label for="appId">App Identifier <span class="required">*</span></label>
+            <input
+              id="appId"
+              type="text"
+              bind:value={appId}
+              placeholder="e.g. com.example.myapp"
+              required
+              disabled={submitting}
+            />
+            <span class="field-hint">Reverse-domain notation recommended</span>
+          </div>
+          <div class="field">
+            <label for="appName">App Name</label>
+            <input
+              id="appName"
+              type="text"
+              bind:value={appName}
+              placeholder="My Application"
+              disabled={submitting}
+            />
+          </div>
+        </div>
+      </fieldset>
+    {:else}
+      <div class="app-badge">
+        <span class="app-label">App:</span>
+        <code>{appId}</code>
+      </div>
+    {/if}
+
+    <!-- Version + Channel -->
+    <div class="field-row">
+      <div class="field field-grow">
+        <label for="version">Version <span class="required">*</span></label>
+        <input
+          id="version"
+          type="text"
+          bind:value={version}
+          placeholder="e.g. 1.2.0 or v1.2.0-rc1"
+          required
+          disabled={submitting}
+        />
+      </div>
+      <div class="field field-fixed">
+        <label for="channel">Channel</label>
+        <select id="channel" bind:value={channel} disabled={submitting}>
+          {#each CHANNELS as ch}
+            <option value={ch}>{ch}</option>
+          {/each}
+        </select>
+      </div>
     </div>
 
     <!-- Release notes -->
@@ -134,17 +228,17 @@
         id="notes"
         bind:value={releaseNotes}
         rows={6}
-        placeholder="Describe what changed in this release…"
+        placeholder="Describe what changed in this release… (Markdown supported)"
         disabled={submitting}
       ></textarea>
     </div>
 
     <!-- Artifact picker -->
     <div class="field">
-      <label>
-        Artifacts <span class="required">*</span>
-        <span class="label-hint">(select artifacts from recent pipeline runs)</span>
-      </label>
+      <span class="field-label" id="assets-label">
+        Assets <span class="required">*</span>
+        <span class="label-hint">(select build artifacts to include as kind 3063 assets)</span>
+      </span>
 
       {#if loadingArtifacts}
         <p class="sub-message">Loading pipeline artifacts…</p>
@@ -158,11 +252,15 @@
         />
         {#if (pipelineData?.groups.length ?? 0) > 0}
           <p class="selection-count">
-            {selectedIds.size} artifact{selectedIds.size !== 1 ? 's' : ''} selected
+            {selectedIds.size} asset{selectedIds.size !== 1 ? 's' : ''} selected
           </p>
         {/if}
       {/if}
     </div>
+
+    {#if publishProgress}
+      <div class="progress-msg">{publishProgress}</div>
+    {/if}
 
     {#if submitError}
       <div class="submit-error">{submitError}</div>
@@ -212,11 +310,75 @@
     color: #111;
   }
 
+  .app-setup {
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    padding: 1rem 1.1rem;
+    margin-bottom: 1.25rem;
+    background: #f8f9fa;
+  }
+
+  .app-setup legend {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: #333;
+    padding: 0 0.4rem;
+  }
+
+  .setup-hint {
+    margin: 0 0 0.75rem;
+    font-size: 0.8rem;
+    color: #666;
+  }
+
+  .app-badge {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1.25rem;
+    padding: 0.5rem 0.75rem;
+    background: #f0f6ff;
+    border: 1px solid #cce0ff;
+    border-radius: 6px;
+    font-size: 0.85rem;
+  }
+
+  .app-label {
+    color: #555;
+    font-weight: 600;
+  }
+
+  .app-badge code {
+    font-family: monospace;
+    color: #1558c0;
+    font-size: 0.85rem;
+  }
+
+  .field-row {
+    display: flex;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .field-grow {
+    flex: 1 1 auto;
+  }
+
+  .field-fixed {
+    flex: 0 0 auto;
+    min-width: 120px;
+  }
+
   .field {
     margin-bottom: 1.25rem;
   }
 
-  label {
+  .field-row .field {
+    margin-bottom: 0;
+  }
+
+  label,
+  .field-label {
     display: block;
     font-size: 0.875rem;
     font-weight: 600;
@@ -235,8 +397,16 @@
     margin-left: 0.3rem;
   }
 
+  .field-hint {
+    display: block;
+    margin-top: 0.2rem;
+    font-size: 0.75rem;
+    color: #999;
+  }
+
   input[type='text'],
-  textarea {
+  textarea,
+  select {
     width: 100%;
     box-sizing: border-box;
     padding: 0.5rem 0.65rem;
@@ -250,14 +420,16 @@
   }
 
   input[type='text']:focus,
-  textarea:focus {
+  textarea:focus,
+  select:focus {
     outline: none;
     border-color: #1a73e8;
     box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.15);
   }
 
   input:disabled,
-  textarea:disabled {
+  textarea:disabled,
+  select:disabled {
     background: #f6f6f6;
     color: #888;
   }
@@ -281,6 +453,17 @@
     margin: 0.4rem 0 0;
     font-size: 0.8rem;
     color: #555;
+  }
+
+  .progress-msg {
+    margin-bottom: 1rem;
+    padding: 0.6rem 0.85rem;
+    background: #e8f0fe;
+    border: 1px solid #cce0ff;
+    border-radius: 6px;
+    color: #1558c0;
+    font-size: 0.875rem;
+    font-weight: 500;
   }
 
   .submit-error {

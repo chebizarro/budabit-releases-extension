@@ -1,21 +1,23 @@
 <script lang="ts">
   import type { WidgetBridge, RepoContext } from 'budabit-sdk';
-  import type { NostrEvent } from '../types.js';
-  import { parseReleaseListItem, formatDate } from '../releases.js';
-  import { getRelays, openSubscription, closeSubscription, tagValue } from '../bridge.js';
+  import type { NostrEvent, SoftwareApplication } from '../types.js';
+  import { RELEASE_KIND } from '../types.js';
+  import { parseReleaseListItem, formatDate, loadRepoApps } from '../releases.js';
+  import { getRelays, openSubscription, closeSubscription, queryEvents } from '../bridge.js';
 
   interface Props {
     bridge: WidgetBridge;
     repo: RepoContext;
     isMaintainer: boolean;
     onViewRelease: (event: NostrEvent) => void;
-    onCreateRelease: () => void;
+    onCreateRelease: (apps: SoftwareApplication[]) => void;
   }
 
   let { bridge, repo, isMaintainer, onViewRelease, onCreateRelease }: Props = $props();
 
   // keyed by event id for deduplication
   let releaseEvents = $state(new Map<string, NostrEvent>());
+  let apps = $state<SoftwareApplication[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
 
@@ -24,34 +26,71 @@
   );
 
   $effect(() => {
-    if (!bridge || !repo?.repoNaddr) return;
+    if (!bridge || !repo) return;
 
     loading = true;
     error = null;
     releaseEvents = new Map();
+    apps = [];
 
+    const relays = getRelays((repo as any).repoRelays);
     const subId = 'releases-list-' + Math.random().toString(36).slice(2);
-    const relays = getRelays(repo.repoRelays);
+    let cleanup: (() => void) | null = null;
 
-    // Register event handlers synchronously before opening subscription
-    const offEvent = bridge.onEvent('nostr:event', (payload: unknown) => {
-      const p = payload as { subscriptionId: string; event: NostrEvent } | null;
-      if (!p || p.subscriptionId !== subId) return;
-      releaseEvents = new Map(releaseEvents).set(p.event.id, p.event);
-    });
+    // Two-phase: discover apps linked to this repo, then subscribe to their releases.
+    (async () => {
+      try {
+        // Phase 1: find kind 32267 applications linked to this repo
+        const discovered = await loadRepoApps(bridge, repo);
+        apps = discovered;
 
-    const offEose = bridge.onEvent('nostr:eose', (payload: unknown) => {
-      const p = payload as { subscriptionId: string } | null;
-      if (!p || p.subscriptionId !== subId) return;
-      loading = false;
-    });
+        // If no apps exist, also try querying releases authored by the repo maintainers
+        // (covers first-time use before an app event exists)
+        const appIds = discovered.map((a) => a.appId).filter(Boolean);
+        const maintainers = (repo as any).maintainers ?? [];
+        const repoPubkey = (repo as any).repoPubkey ?? '';
 
-    openSubscription(bridge, relays, { kinds: [30063], '#a': [repo.repoNaddr] }, subId).catch(
-      (err) => {
+        // Build subscription filter
+        let filter: Record<string, unknown>;
+        if (appIds.length > 0) {
+          // NIP-82 correct: filter by app identifiers
+          filter = { kinds: [RELEASE_KIND], '#i': appIds };
+        } else if (maintainers.length > 0) {
+          // Fallback: releases by maintainers
+          filter = { kinds: [RELEASE_KIND], authors: maintainers };
+        } else if (repoPubkey) {
+          // Last resort: releases by repo owner
+          filter = { kinds: [RELEASE_KIND], authors: [repoPubkey] };
+        } else {
+          loading = false;
+          return;
+        }
+
+        // Phase 2: subscribe to releases matching the filter
+        const offEvent = bridge.onEvent('nostr:event', (payload: unknown) => {
+          const p = payload as { subscriptionId: string; event: NostrEvent } | null;
+          if (!p || p.subscriptionId !== subId) return;
+          releaseEvents = new Map(releaseEvents).set(p.event.id, p.event);
+        });
+
+        const offEose = bridge.onEvent('nostr:eose', (payload: unknown) => {
+          const p = payload as { subscriptionId: string } | null;
+          if (!p || p.subscriptionId !== subId) return;
+          loading = false;
+        });
+
+        await openSubscription(bridge, relays, filter, subId);
+
+        cleanup = () => {
+          offEvent();
+          offEose();
+          closeSubscription(bridge, subId);
+        };
+      } catch (err) {
         error = err instanceof Error ? err.message : String(err);
         loading = false;
       }
-    );
+    })();
 
     // Safety: mark done after 15s even if no EOSE
     const timer = setTimeout(() => {
@@ -60,18 +99,21 @@
 
     return () => {
       clearTimeout(timer);
-      offEvent();
-      offEose();
-      closeSubscription(bridge, subId);
+      cleanup?.();
     };
   });
+
+  function channelBadge(event: NostrEvent): string {
+    const c = event.tags.find((t) => t[0] === 'c')?.[1];
+    return c && c !== 'main' ? c : '';
+  }
 </script>
 
 <div class="release-list">
   <div class="list-header">
     <h2>Releases</h2>
     {#if isMaintainer}
-      <button class="btn-primary" onclick={onCreateRelease}>New Release</button>
+      <button class="btn-primary" onclick={() => onCreateRelease(apps)}>New Release</button>
     {/if}
   </div>
 
@@ -84,7 +126,7 @@
       <p class="empty-title">No releases yet</p>
       {#if isMaintainer}
         <p class="empty-hint">Create the first release from your pipeline builds.</p>
-        <button class="btn-primary" onclick={onCreateRelease}>Create Release</button>
+        <button class="btn-primary" onclick={() => onCreateRelease(apps)}>Create Release</button>
       {:else}
         <p class="empty-hint">No releases have been published for this repository.</p>
       {/if}
@@ -93,19 +135,28 @@
     <ul class="releases">
       {#each sortedReleases as event (event.id)}
         {@const item = parseReleaseListItem(event)}
-        <li class="release-card" onclick={() => onViewRelease(event)} role="button" tabindex="0"
-          onkeydown={(e) => e.key === 'Enter' && onViewRelease(event)}>
-          <div class="release-tag">
-            <span class="tag-badge">{item.version}</span>
-          </div>
-          <div class="release-meta">
-            <span class="meta-date">{formatDate(item.createdAt)}</span>
-            <span class="meta-sep">·</span>
-            <span class="meta-count">{item.artifactCount} artifact{item.artifactCount !== 1 ? 's' : ''}</span>
-          </div>
-          {#if event.content}
-            <p class="release-notes-preview">{event.content.split('\n')[0]}</p>
-          {/if}
+        {@const channel = channelBadge(event)}
+        <li class="release-card">
+          <button class="release-card-btn" onclick={() => onViewRelease(event)} type="button">
+            <div class="release-tag">
+              <span class="tag-badge">{item.version}</span>
+              {#if channel}
+                <span class="channel-badge">{channel}</span>
+              {/if}
+            </div>
+            <div class="release-meta">
+              <span class="meta-date">{formatDate(item.createdAt)}</span>
+              <span class="meta-sep">·</span>
+              <span class="meta-count">{item.assetCount} asset{item.assetCount !== 1 ? 's' : ''}</span>
+              {#if item.appId}
+                <span class="meta-sep">·</span>
+                <span class="meta-app">{item.appId}</span>
+              {/if}
+            </div>
+            {#if event.content}
+              <p class="release-notes-preview">{event.content.split('\n')[0]}</p>
+            {/if}
+          </button>
         </li>
       {/each}
     </ul>
@@ -188,20 +239,32 @@
   }
 
   .release-card {
+    list-style: none;
+  }
+
+  .release-card-btn {
+    display: block;
+    width: 100%;
+    text-align: left;
     background: #fff;
     border: 1px solid #e8e8e8;
     border-radius: 8px;
     padding: 0.9rem 1rem;
     cursor: pointer;
+    font: inherit;
+    color: inherit;
     transition: border-color 0.15s, box-shadow 0.15s;
   }
 
-  .release-card:hover {
+  .release-card-btn:hover {
     border-color: #1a73e8;
     box-shadow: 0 1px 4px rgba(26, 115, 232, 0.15);
   }
 
   .release-tag {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
     margin-bottom: 0.3rem;
   }
 
@@ -216,6 +279,17 @@
     font-family: monospace;
   }
 
+  .channel-badge {
+    display: inline-block;
+    padding: 0.12rem 0.45rem;
+    background: #fff3cd;
+    color: #856404;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
   .release-meta {
     font-size: 0.8rem;
     color: #888;
@@ -224,6 +298,12 @@
 
   .meta-sep {
     margin: 0 0.3rem;
+  }
+
+  .meta-app {
+    font-family: monospace;
+    font-size: 0.75rem;
+    color: #999;
   }
 
   .release-notes-preview {

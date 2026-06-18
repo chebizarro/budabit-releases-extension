@@ -1,7 +1,14 @@
 <script lang="ts">
   import type { WidgetBridge, RepoContext } from 'budabit-sdk';
-  import type { NostrEvent, Release } from '../types.js';
-  import { loadReleaseDetail, formatBytes, formatDate, shortHash } from '../releases.js';
+  import type { NostrEvent, SoftwareRelease } from '../types.js';
+  import {
+    loadReleaseDetail,
+    formatBytes,
+    formatDate,
+    shortHash,
+    assetDownloadUrl,
+    platformLabel,
+  } from '../releases.js';
 
   interface Props {
     bridge: WidgetBridge;
@@ -12,7 +19,7 @@
 
   let { bridge, repo, releaseEvent, onBack }: Props = $props();
 
-  let release = $state<Release | null>(null);
+  let release = $state<SoftwareRelease | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
 
@@ -40,6 +47,9 @@
     <button class="btn-back" onclick={onBack}>← Releases</button>
     {#if release}
       <span class="tag-badge">{release.version}</span>
+      {#if release.channel && release.channel !== 'main'}
+        <span class="channel-badge">{release.channel}</span>
+      {/if}
     {/if}
   </div>
 
@@ -53,9 +63,13 @@
         <h2>{release.version}</h2>
         <div class="release-meta">
           <span>{formatDate(release.createdAt)}</span>
-          {#if release.commitId}
+          {#if release.appId}
             <span class="meta-sep">·</span>
-            <span class="commit-hash" title={release.commitId}>{shortHash(release.commitId)}</span>
+            <span class="meta-app" title="Application identifier">{release.appId}</span>
+          {/if}
+          {#if release.channel}
+            <span class="meta-sep">·</span>
+            <span class="meta-channel">{release.channel}</span>
           {/if}
         </div>
       </div>
@@ -68,34 +82,65 @@
       {/if}
 
       <section class="artifacts-section">
-        <h3>Artifacts ({release.artifacts.length})</h3>
-        {#if release.artifacts.length === 0}
-          <p class="no-artifacts">No artifacts attached to this release.</p>
+        <h3>Assets ({release.assets.length})</h3>
+        {#if release.assets.length === 0}
+          <p class="no-artifacts">No assets attached to this release.</p>
         {:else}
           <div class="table-wrap">
             <table class="artifact-table">
               <thead>
                 <tr>
-                  <th>Filename</th>
+                  <th>File</th>
+                  <th>Platform</th>
                   <th>Size</th>
-                  <th>Type</th>
+                  <th>MIME Type</th>
                   <th>SHA-256</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
-                {#each release.artifacts as artifact (artifact.eventId)}
+                {#each release.assets as asset (asset.eventId)}
                   <tr>
-                    <td class="col-filename">{artifact.filename}</td>
-                    <td class="col-size">{artifact.size != null ? formatBytes(artifact.size) : '—'}</td>
-                    <td class="col-mime">{artifact.mimeType}</td>
-                    <td class="col-hash" title={artifact.sha256}>{shortHash(artifact.sha256)}</td>
+                    <td class="col-filename">
+                      {asset.filename}
+                      {#if asset.variant}
+                        <span class="variant-label">{asset.variant}</span>
+                      {/if}
+                    </td>
+                    <td class="col-platform">{platformLabel(asset.platforms)}</td>
+                    <td class="col-size">{asset.size != null ? formatBytes(asset.size) : '—'}</td>
+                    <td class="col-mime">{asset.mimeType}</td>
+                    <td class="col-hash" title={asset.sha256}>{shortHash(asset.sha256)}</td>
                     <td class="col-dl">
-                      <a class="btn-download" href={artifact.url} target="_blank" rel="noreferrer">
+                      <a class="btn-download" href={assetDownloadUrl(asset)} target="_blank" rel="noreferrer">
                         Download
                       </a>
                     </td>
                   </tr>
+                  {#if asset.commitId || asset.minPlatformVersion || asset.versionCode != null}
+                    <tr class="asset-extra-row">
+                      <td colspan="6" class="asset-extra">
+                        {#if asset.commitId}
+                          <span class="extra-item">
+                            <span class="extra-label">commit</span>
+                            <code>{asset.commitId.slice(0, 10)}</code>
+                          </span>
+                        {/if}
+                        {#if asset.versionCode != null}
+                          <span class="extra-item">
+                            <span class="extra-label">version code</span>
+                            {asset.versionCode}
+                          </span>
+                        {/if}
+                        {#if asset.minPlatformVersion}
+                          <span class="extra-item">
+                            <span class="extra-label">min platform</span>
+                            {asset.minPlatformVersion}
+                          </span>
+                        {/if}
+                      </td>
+                    </tr>
+                  {/if}
                 {/each}
               </tbody>
             </table>
@@ -143,6 +188,17 @@
     font-family: monospace;
   }
 
+  .channel-badge {
+    display: inline-block;
+    padding: 0.12rem 0.45rem;
+    background: #fff3cd;
+    color: #856404;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
   .state-message,
   .state-error {
     padding: 1.5rem;
@@ -178,9 +234,16 @@
     margin: 0 0.35rem;
   }
 
-  .commit-hash {
+  .meta-app {
     font-family: monospace;
     color: #555;
+  }
+
+  .meta-channel {
+    text-transform: uppercase;
+    font-weight: 600;
+    font-size: 0.75rem;
+    letter-spacing: 0.03em;
   }
 
   section {
@@ -257,6 +320,22 @@
     word-break: break-all;
   }
 
+  .variant-label {
+    display: inline-block;
+    margin-left: 0.3rem;
+    padding: 0.05rem 0.35rem;
+    background: #f0f0f0;
+    color: #666;
+    border-radius: 3px;
+    font-size: 0.7rem;
+  }
+
+  .col-platform {
+    white-space: nowrap;
+    font-size: 0.8rem;
+    color: #555;
+  }
+
   .col-size,
   .col-mime {
     white-space: nowrap;
@@ -287,5 +366,37 @@
 
   .btn-download:hover {
     background: #1558c0;
+  }
+
+  .asset-extra-row td {
+    padding-top: 0;
+    border-bottom: 1px solid #e8e8e8;
+  }
+
+  .asset-extra {
+    display: flex;
+    gap: 1rem;
+    font-size: 0.75rem;
+    color: #888;
+    padding-bottom: 0.5rem;
+  }
+
+  .extra-item {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+
+  .extra-label {
+    font-weight: 600;
+    color: #999;
+  }
+
+  .asset-extra code {
+    font-family: monospace;
+    background: #f5f5f5;
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+    font-size: 0.72rem;
   }
 </style>
