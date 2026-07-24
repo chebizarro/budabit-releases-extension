@@ -1,0 +1,75 @@
+name: Publish Widget
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Generate widget manifest
+        run: pnpm manifest:generate
+
+      - name: Verify publish artifacts exist
+        run: |
+          ARTIFACT="packages/iframe-app/dist/index.html"
+          EVENT="dist/widget/event.json"
+          if [ ! -f "$ARTIFACT" ]; then
+            echo "::error::Build artifact not found at $ARTIFACT"
+            exit 1
+          fi
+          if [ ! -f "$EVENT" ]; then
+            echo "::error::Widget event.json not found at $EVENT (did manifest:generate run?)"
+            exit 1
+          fi
+
+      - name: Publish widget (Blossom + relays, GitHub Release as backup)
+        env:
+          NOSTR_SK: ${{ secrets.NOSTR_SK }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pnpm exec budabit-publish \
+            --event dist/widget/event.json \
+            --upload-first \
+            --blossom https://blossom.primal.net \
+            --artifact packages/iframe-app/dist/index.html \
+            --github-repo ${{ github.repository }} \
+            --github-tag ${{ github.ref_name }}
