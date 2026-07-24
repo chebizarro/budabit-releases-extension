@@ -6,6 +6,7 @@
     type WidgetBridge,
     type WidgetInitPayload,
   } from 'budabit-sdk';
+  import { watchHostTheme } from './lib/host-theme';
   import type { SoftwareApplication } from './lib/types.js';
   import ReleaseList from './lib/components/ReleaseList.svelte';
   import ReleaseDetail from './lib/components/ReleaseDetail.svelte';
@@ -89,6 +90,9 @@
     bridge = b;
     dbg('bridge created, setting up event handlers…');
 
+    // Match the host application's theme (light/dark + background)
+    const offTheme = watchHostTheme(b);
+
     // widget:init — sent first by the host; may carry repoContext inline.
     const offInit = b.onEvent('widget:init', (payload) => {
       dbg(`widget:init received: ${JSON.stringify(payload).slice(0, 200)}`);
@@ -126,6 +130,7 @@
     b.signalReady();
 
     return () => {
+      offTheme();
       offInit();
       offRepo();
       offContextUpdate();
@@ -195,14 +200,74 @@
 </div>
 
 <style>
+  /* Theme tokens — lib/host-theme.ts sets `data-theme` on <html> from the
+     host's widget:init / widget:themeChanged events. */
+  :global(:root) {
+    color-scheme: light;
+    --ext-bg: #ffffff;
+    --ext-surface: #ffffff;
+    --ext-surface-2: #f8f9fa;
+    --ext-border: #e8e8e8;
+    --ext-border-strong: #d0d7de;
+    --ext-text: #111111;
+    --ext-text-secondary: #555555;
+    --ext-text-muted: #666666;
+    --ext-text-faint: #999999;
+    --ext-accent: #1a73e8;
+    --ext-accent-hover: #1558c0;
+    --ext-accent-text: #ffffff;
+    --ext-accent-soft: #e8f0fe;
+    --ext-accent-soft-2: #f0f6ff;
+    --ext-accent-soft-border: #cce0ff;
+    --ext-accent-muted: #9fc3f8;
+    --ext-danger-bg: #fce4e4;
+    --ext-danger-border: #f5c6cb;
+    --ext-danger-text: #c62828;
+    --ext-warning-bg: #fff3cd;
+    --ext-warning-text: #856404;
+    --ext-success-bg: #e6f4ea;
+    --ext-success-text: #1e7e34;
+    --ext-code-bg: #1e1e1e;
+    --ext-code-text: #d4d4d4;
+  }
+
+  :global([data-theme='dark']) {
+    color-scheme: dark;
+    --ext-bg: #151c23;
+    --ext-surface: #1e2831;
+    --ext-surface-2: #232e39;
+    --ext-border: #33404c;
+    --ext-border-strong: #40505e;
+    --ext-text: #e6ebf0;
+    --ext-text-secondary: #c3ccd5;
+    --ext-text-muted: #98a6b3;
+    --ext-text-faint: #78889a;
+    --ext-accent: #4a9eff;
+    --ext-accent-hover: #74b6ff;
+    --ext-accent-text: #ffffff;
+    --ext-accent-soft: #1c3250;
+    --ext-accent-soft-2: #1a2c44;
+    --ext-accent-soft-border: #2c4a74;
+    --ext-accent-muted: #3f6ea8;
+    --ext-danger-bg: #3b1d21;
+    --ext-danger-border: #7a3a42;
+    --ext-danger-text: #f1a7ad;
+    --ext-warning-bg: #3f3520;
+    --ext-warning-text: #e8c869;
+    --ext-success-bg: #14321f;
+    --ext-success-text: #7fd6a0;
+    --ext-code-bg: #10161c;
+    --ext-code-text: #c9d4de;
+  }
+
   :global(body) {
     margin: 0;
     padding: 0;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell,
       sans-serif;
-    background: #fff;
+    background: var(--host-background, var(--ext-bg));
     font-size: 14px;
-    color: #111;
+    color: var(--ext-text);
   }
 
   .app {
@@ -213,7 +278,7 @@
   .no-context {
     padding: 2rem;
     text-align: center;
-    color: #888;
+    color: var(--ext-text-muted);
     font-size: 0.9rem;
   }
 
@@ -222,7 +287,7 @@
   }
 
   .hint {
-    color: #aaa;
+    color: var(--ext-text-faint);
     font-size: 0.8rem;
   }
 
@@ -233,8 +298,8 @@
     font-family: monospace;
     font-size: 0.7rem;
     line-height: 1.5;
-    background: #1e1e1e;
-    color: #d4d4d4;
+    background: var(--ext-code-bg);
+    color: var(--ext-code-text);
     padding: 0.75rem 1rem;
     border-radius: 6px;
     overflow-x: auto;

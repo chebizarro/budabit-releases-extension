@@ -166,7 +166,7 @@
   .btn-back {
     background: none;
     border: none;
-    color: #1a73e8;
+    color: var(--ext-accent);
     font-size: 0.875rem;
     cursor: pointer;
     padding: 0.25rem 0.5rem;
@@ -174,14 +174,14 @@
   }
 
   .btn-back:hover {
-    background: #e8f0fe;
+    background: var(--ext-accent-soft);
   }
 
   .tag-badge {
     display: inline-block;
     padding: 0.2rem 0.6rem;
-    background: #e8f0fe;
-    color: #1558c0;
+    background: var(--ext-accent-soft);
+    color: var(--ext-accent-hover);
     border-radius: 4px;
     font-size: 0.8rem;
     font-weight: 600;
@@ -191,8 +191,8 @@
   .channel-badge {
     display: inline-block;
     padding: 0.12rem 0.45rem;
-    background: #fff3cd;
-    color: #856404;
+    background: var(--ext-warning-bg);
+    color: var(--ext-warning-text);
     border-radius: 4px;
     font-size: 0.7rem;
     font-weight: 600;
@@ -203,13 +203,13 @@
   .state-error {
     padding: 1.5rem;
     text-align: center;
-    color: #666;
+    color: var(--ext-text-muted);
     font-size: 0.9rem;
   }
 
   .state-error {
-    color: #c62828;
-    background: #fce4e4;
+    color: var(--ext-danger-text);
+    background: var(--ext-danger-bg);
     border-radius: 8px;
   }
 
@@ -221,13 +221,13 @@
     margin: 0 0 0.25rem;
     font-size: 1.3rem;
     font-weight: 700;
-    color: #111;
+    color: var(--ext-text);
     font-family: monospace;
   }
 
   .release-meta {
     font-size: 0.8rem;
-    color: #888;
+    color: var(--ext-text-muted);
   }
 
   .meta-sep {
@@ -236,7 +236,7 @@
 
   .meta-app {
     font-family: monospace;
-    color: #555;
+    color: var(--ext-text-secondary);
   }
 
   .meta-channel {
@@ -254,8 +254,8 @@
     margin: 0 0 0.6rem;
     font-size: 0.95rem;
     font-weight: 600;
-    color: #333;
-    border-bottom: 1px solid #eee;
+    color: var(--ext-text);
+    border-bottom: 1px solid var(--ext-border);
     padding-bottom: 0.4rem;
   }
 
@@ -265,9 +265,9 @@
     font-family: inherit;
     font-size: 0.875rem;
     line-height: 1.6;
-    color: #444;
-    background: #f8f9fa;
-    border: 1px solid #e8e8e8;
+    color: var(--ext-text-secondary);
+    background: var(--ext-surface-2);
+    border: 1px solid var(--ext-border);
     border-radius: 6px;
     padding: 0.85rem 1rem;
     overflow-x: auto;
@@ -275,13 +275,13 @@
 
   .no-artifacts {
     margin: 0;
-    color: #888;
+    color: var(--ext-text-muted);
     font-size: 0.875rem;
   }
 
   .table-wrap {
     overflow-x: auto;
-    border: 1px solid #e8e8e8;
+    border: 1px solid var(--ext-border);
     border-radius: 6px;
   }
 
@@ -292,22 +292,22 @@
   }
 
   .artifact-table thead {
-    background: #f8f9fa;
+    background: var(--ext-surface-2);
   }
 
   .artifact-table th {
     text-align: left;
     padding: 0.55rem 0.75rem;
     font-weight: 600;
-    color: #555;
-    border-bottom: 1px solid #e8e8e8;
+    color: var(--ext-text-secondary);
+    border-bottom: 1px solid var(--ext-border);
     white-space: nowrap;
   }
 
   .artifact-table td {
     padding: 0.55rem 0.75rem;
-    border-bottom: 1px solid #f0f0f0;
-    color: #333;
+    border-bottom: 1px solid var(--ext-surface-2);
+    color: var(--ext-text);
     vertical-align: middle;
   }
 
@@ -324,8 +324,8 @@
     display: inline-block;
     margin-left: 0.3rem;
     padding: 0.05rem 0.35rem;
-    background: #f0f0f0;
-    color: #666;
+    background: var(--ext-surface-2);
+    color: var(--ext-text-muted);
     border-radius: 3px;
     font-size: 0.7rem;
   }
@@ -333,18 +333,18 @@
   .col-platform {
     white-space: nowrap;
     font-size: 0.8rem;
-    color: #555;
+    color: var(--ext-text-secondary);
   }
 
   .col-size,
   .col-mime {
     white-space: nowrap;
-    color: #666;
+    color: var(--ext-text-muted);
   }
 
   .col-hash {
     font-family: monospace;
-    color: #666;
+    color: var(--ext-text-muted);
     white-space: nowrap;
   }
 
@@ -356,8 +356,8 @@
   .btn-download {
     display: inline-block;
     padding: 0.3rem 0.7rem;
-    background: #1a73e8;
-    color: #fff;
+    background: var(--ext-accent);
+    color: var(--ext-accent-text);
     text-decoration: none;
     border-radius: 4px;
     font-size: 0.8rem;
@@ -365,19 +365,19 @@
   }
 
   .btn-download:hover {
-    background: #1558c0;
+    background: var(--ext-accent-hover);
   }
 
   .asset-extra-row td {
     padding-top: 0;
-    border-bottom: 1px solid #e8e8e8;
+    border-bottom: 1px solid var(--ext-border);
   }
 
   .asset-extra {
     display: flex;
     gap: 1rem;
     font-size: 0.75rem;
-    color: #888;
+    color: var(--ext-text-muted);
     padding-bottom: 0.5rem;
   }
 
@@ -389,12 +389,12 @@
 
   .extra-label {
     font-weight: 600;
-    color: #999;
+    color: var(--ext-text-faint);
   }
 
   .asset-extra code {
     font-family: monospace;
-    background: #f5f5f5;
+    background: var(--ext-surface-2);
     padding: 0.05rem 0.3rem;
     border-radius: 3px;
     font-size: 0.72rem;

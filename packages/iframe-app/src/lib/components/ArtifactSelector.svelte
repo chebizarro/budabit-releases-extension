@@ -80,14 +80,14 @@
 <style>
   .empty {
     margin: 0;
-    color: #888;
+    color: var(--ext-text-muted);
     font-size: 0.875rem;
     padding: 0.75rem 0;
   }
 
   .table-wrap {
     overflow-x: auto;
-    border: 1px solid #e8e8e8;
+    border: 1px solid var(--ext-border);
     border-radius: 6px;
   }
 
@@ -98,22 +98,22 @@
   }
 
   .artifact-table thead {
-    background: #f8f9fa;
+    background: var(--ext-surface-2);
   }
 
   .artifact-table th {
     text-align: left;
     padding: 0.5rem 0.65rem;
     font-weight: 600;
-    color: #555;
-    border-bottom: 1px solid #e8e8e8;
+    color: var(--ext-text-secondary);
+    border-bottom: 1px solid var(--ext-border);
     white-space: nowrap;
   }
 
   .artifact-table td {
     padding: 0.5rem 0.65rem;
-    border-bottom: 1px solid #f0f0f0;
-    color: #333;
+    border-bottom: 1px solid var(--ext-surface-2);
+    color: var(--ext-text);
     vertical-align: middle;
   }
 
@@ -122,7 +122,7 @@
   }
 
   .artifact-row.selected {
-    background: #f0f6ff;
+    background: var(--ext-accent-soft-2);
   }
 
   .col-check {
@@ -137,14 +137,14 @@
 
   .col-hash {
     font-family: monospace;
-    color: #666;
+    color: var(--ext-text-muted);
     white-space: nowrap;
   }
 
   .col-size,
   .col-workers {
     white-space: nowrap;
-    color: #666;
+    color: var(--ext-text-muted);
     text-align: right;
   }
 
@@ -158,17 +158,17 @@
   }
 
   .status-ok {
-    background: #e6f4ea;
-    color: #1e7e34;
+    background: var(--ext-success-bg);
+    color: var(--ext-success-text);
   }
 
   .status-warn {
-    background: #fff3cd;
-    color: #856404;
+    background: var(--ext-warning-bg);
+    color: var(--ext-warning-text);
   }
 
   .status-bad {
-    background: #fce4e4;
-    color: #c62828;
+    background: var(--ext-danger-bg);
+    color: var(--ext-danger-text);
   }
 </style>

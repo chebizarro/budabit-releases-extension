@@ -189,13 +189,13 @@
     margin: 0;
     font-size: 1.1rem;
     font-weight: 600;
-    color: #111;
+    color: var(--ext-text);
   }
 
   .btn-primary {
     padding: 0.4rem 0.9rem;
-    background: #1a73e8;
-    color: #fff;
+    background: var(--ext-accent);
+    color: var(--ext-accent-text);
     border: none;
     border-radius: 6px;
     font-size: 0.875rem;
@@ -204,20 +204,20 @@
   }
 
   .btn-primary:hover {
-    background: #1558c0;
+    background: var(--ext-accent-hover);
   }
 
   .state-message,
   .state-error {
     padding: 1.5rem;
     text-align: center;
-    color: #666;
+    color: var(--ext-text-muted);
     font-size: 0.9rem;
   }
 
   .state-error {
-    color: #c62828;
-    background: #fce4e4;
+    color: var(--ext-danger-text);
+    background: var(--ext-danger-bg);
     border-radius: 8px;
   }
 
@@ -230,12 +230,12 @@
     margin: 0 0 0.4rem;
     font-size: 1rem;
     font-weight: 600;
-    color: #333;
+    color: var(--ext-text);
   }
 
   .empty-hint {
     margin: 0 0 1.25rem;
-    color: #666;
+    color: var(--ext-text-muted);
     font-size: 0.875rem;
   }
 
@@ -256,8 +256,8 @@
     display: block;
     width: 100%;
     text-align: left;
-    background: #fff;
-    border: 1px solid #e8e8e8;
+    background: var(--ext-surface);
+    border: 1px solid var(--ext-border);
     border-radius: 8px;
     padding: 0.9rem 1rem;
     cursor: pointer;
@@ -267,7 +267,7 @@
   }
 
   .release-card-btn:hover {
-    border-color: #1a73e8;
+    border-color: var(--ext-accent);
     box-shadow: 0 1px 4px rgba(26, 115, 232, 0.15);
   }
 
@@ -281,8 +281,8 @@
   .tag-badge {
     display: inline-block;
     padding: 0.15rem 0.55rem;
-    background: #e8f0fe;
-    color: #1558c0;
+    background: var(--ext-accent-soft);
+    color: var(--ext-accent-hover);
     border-radius: 4px;
     font-size: 0.8rem;
     font-weight: 600;
@@ -292,8 +292,8 @@
   .channel-badge {
     display: inline-block;
     padding: 0.12rem 0.45rem;
-    background: #fff3cd;
-    color: #856404;
+    background: var(--ext-warning-bg);
+    color: var(--ext-warning-text);
     border-radius: 4px;
     font-size: 0.7rem;
     font-weight: 600;
@@ -302,7 +302,7 @@
 
   .release-meta {
     font-size: 0.8rem;
-    color: #888;
+    color: var(--ext-text-muted);
     margin-bottom: 0.25rem;
   }
 
@@ -313,13 +313,13 @@
   .meta-app {
     font-family: monospace;
     font-size: 0.75rem;
-    color: #999;
+    color: var(--ext-text-faint);
   }
 
   .release-notes-preview {
     margin: 0;
     font-size: 0.85rem;
-    color: #555;
+    color: var(--ext-text-secondary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
