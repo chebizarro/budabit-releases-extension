@@ -1,7 +1,6 @@
 <script lang="ts">
-  import type { WidgetBridge } from '../bridge.js';
-  import type { RepoContext } from '../types.js';
-  import type { NostrEvent, SoftwareRelease } from '../types.js';
+  import type { NostrEvent, RepoContext, WidgetBridge } from 'budabit-sdk';
+  import type { SoftwareRelease } from '../types.js';
   import {
     loadReleaseDetail,
     formatBytes,

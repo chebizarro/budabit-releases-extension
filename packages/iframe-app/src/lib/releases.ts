@@ -1,15 +1,67 @@
-import type { WidgetBridge } from './bridge.js';
-import type { RepoContext } from './types.js';
+import type { NostrEvent, RepoContext, WidgetBridge } from 'budabit-sdk';
 import type {
   SoftwareRelease,
   SoftwareAsset,
   SoftwareApplication,
   ReleaseListItem,
   Artifact,
-  NostrEvent,
 } from './types.js';
 import { APP_KIND, RELEASE_KIND, ASSET_KIND } from './types.js';
-import { queryEvents, signEvent, publishEvent, getRelays, tagValue, tagValues } from './bridge.js';
+
+export const FALLBACK_RELAYS = ['wss://relay.sharegap.net', 'wss://nos.lol'];
+
+export function getRelays(repoRelays: string[] | undefined): string[] {
+  const merged = [...(repoRelays ?? []), ...FALLBACK_RELAYS];
+  return [...new Set(merged.filter(Boolean))];
+}
+
+export async function queryEvents(
+  bridge: WidgetBridge,
+  relays: string[],
+  filter: Record<string, unknown>
+): Promise<NostrEvent[]> {
+  const response = await bridge.request('nostr:query', { relays, filter });
+  if ('error' in response) throw new Error(response.error);
+  return response.events ?? [];
+}
+
+export async function signEvent(
+  bridge: WidgetBridge,
+  unsignedEvent: Record<string, unknown>
+): Promise<NostrEvent> {
+  const response = (await bridge.request('nostr:sign', unsignedEvent)) as
+    | { status: 'ok'; event: NostrEvent }
+    | { error: string };
+  if ('error' in response) throw new Error(response.error);
+  if (response.status === 'ok' && response.event) return response.event;
+  throw new Error('Unexpected response from nostr:sign');
+}
+
+export async function publishEvent(
+  bridge: WidgetBridge,
+  event: Record<string, unknown>,
+  relays?: string[]
+): Promise<string> {
+  const payload = relays ? { event, relays } : event;
+  const response = (await bridge.request('nostr:publish', payload)) as {
+    error?: string;
+    result?: { eventId?: string };
+    eventId?: string;
+  };
+  if (response.error) throw new Error(response.error);
+  return response.result?.eventId ?? response.eventId ?? '';
+}
+
+export function tagValue(event: NostrEvent, tagName: string): string | undefined {
+  return event.tags.find((tag) => tag[0] === tagName)?.[1];
+}
+
+export function tagValues(event: NostrEvent, tagName: string): string[] {
+  return event.tags
+    .filter((tag) => tag[0] === tagName)
+    .map((tag) => tag[1])
+    .filter((value): value is string => Boolean(value));
+}
 
 // ── Parsers ──────────────────────────────────────────────────────────────────
 

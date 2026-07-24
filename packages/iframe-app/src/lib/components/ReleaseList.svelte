@@ -1,9 +1,9 @@
 <script lang="ts">
-  import type { WidgetBridge } from '../bridge.js';
-  import type { NostrEvent, RepoContext, SoftwareApplication } from '../types.js';
+  import type { NostrEvent, RepoContext, WidgetBridge } from 'budabit-sdk';
+  import type { SoftwareApplication } from '../types.js';
   import { RELEASE_KIND } from '../types.js';
   import { parseReleaseListItem, formatDate, loadRepoApps } from '../releases.js';
-  import { getRelays } from '../bridge.js';
+  import { getRelays } from '../releases.js';
 
   interface Props {
     bridge: WidgetBridge;

@@ -1,7 +1,6 @@
-import type { WidgetBridge } from './bridge.js';
-import type { RepoContext } from './types.js';
-import type { Artifact, PipelineRun, ArtifactGroup, NostrEvent } from './types.js';
-import { queryEvents, getRelays, tagValue } from './bridge.js';
+import type { NostrEvent, RepoContext, WidgetBridge } from 'budabit-sdk';
+import type { Artifact, PipelineRun, ArtifactGroup } from './types.js';
+import { queryEvents, getRelays, tagValue } from './releases.js';
 
 const RUN_KIND = 5401;
 const ARTIFACT_KIND = 1063;

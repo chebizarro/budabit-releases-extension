@@ -1,6 +1,5 @@
 <script lang="ts">
-  import type { WidgetBridge } from '../bridge.js';
-  import type { RepoContext } from '../types.js';
+  import type { RepoContext, WidgetBridge } from 'budabit-sdk';
   import type { PipelineArtifactData } from '../pipelines.js';
   import type { SoftwareApplication } from '../types.js';
   import { CHANNELS } from '../types.js';
@@ -9,7 +8,7 @@
     buildApplicationEvent,
     createRelease,
   } from '../releases.js';
-  import { publishEvent, getRelays } from '../bridge.js';
+  import { publishEvent, getRelays } from '../releases.js';
   import ArtifactSelector from './ArtifactSelector.svelte';
 
   interface Props {

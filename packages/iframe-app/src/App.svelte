@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { createWidgetBridge, type WidgetBridge } from './lib/bridge.js';
-  import type {
-    NostrEvent,
-    RepoContext,
-    SoftwareApplication,
-    WidgetInitPayload,
-  } from './lib/types.js';
+  import {
+    createWidgetBridge,
+    type NostrEvent,
+    type RepoContext,
+    type WidgetBridge,
+    type WidgetInitPayload,
+  } from 'budabit-sdk';
+  import type { SoftwareApplication } from './lib/types.js';
   import ReleaseList from './lib/components/ReleaseList.svelte';
   import ReleaseDetail from './lib/components/ReleaseDetail.svelte';
   import CreateRelease from './lib/components/CreateRelease.svelte';
