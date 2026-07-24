@@ -11,6 +11,21 @@ export default tseslint.config(
         tsconfigRootDir: import.meta.dirname,
       },
     },
+    rules: {
+      // Numbers in template literals are fine.
+      '@typescript-eslint/restrict-template-expressions': ['error', { allowNumber: true }],
+      // Bridge code performs defensive checks and interoperates with host payloads.
+      '@typescript-eslint/no-unnecessary-condition': 'warn',
+      '@typescript-eslint/no-redundant-type-constituents': 'warn',
+      '@typescript-eslint/no-unsafe-assignment': 'warn',
+      '@typescript-eslint/no-unsafe-argument': 'warn',
+      '@typescript-eslint/no-unsafe-call': 'warn',
+      '@typescript-eslint/no-unsafe-member-access': 'warn',
+      '@typescript-eslint/no-non-null-assertion': 'warn',
+      '@typescript-eslint/no-confusing-void-expression': 'warn',
+      '@typescript-eslint/require-await': 'warn',
+      '@typescript-eslint/no-deprecated': 'warn',
+    },
   },
   {
     files: ['**/*.js'],

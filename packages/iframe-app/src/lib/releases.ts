@@ -1,4 +1,5 @@
-import type { WidgetBridge, RepoContext } from 'budabit-sdk';
+import type { WidgetBridge } from './bridge.js';
+import type { RepoContext } from './types.js';
 import type {
   SoftwareRelease,
   SoftwareAsset,
@@ -104,16 +105,16 @@ export async function loadRepoApps(
   bridge: WidgetBridge,
   repo: RepoContext
 ): Promise<SoftwareApplication[]> {
-  const relays = getRelays((repo as any).repoRelays);
-  const repoAddr = (repo as any).repoNaddr ?? '';
+  const relays = getRelays(repo.repoRelays);
+  const repoAddr = repo.repoNaddr ?? '';
   if (!repoAddr) return [];
 
   // Resolve the coordinate form: 30617:pubkey:identifier
-  let coordinate = repoAddr;
+  const coordinate = repoAddr;
   if (!coordinate.includes(':')) {
     // It's a bech32 naddr — we can't easily decode it in pure JS without nostr-tools.
     // Try querying by author instead.
-    const pubkey = (repo as any).repoPubkey;
+    const pubkey = repo.repoPubkey;
     if (!pubkey) return [];
     const events = await queryEvents(bridge, relays, {
       kinds: [APP_KIND],
@@ -142,7 +143,7 @@ export async function loadReleaseDetail(
   repo: RepoContext,
   releaseEvent: NostrEvent
 ): Promise<SoftwareRelease> {
-  const relays = getRelays((repo as any).repoRelays);
+  const relays = getRelays(repo.repoRelays);
   const appId = tagValue(releaseEvent, 'i') ?? '';
   const version =
     tagValue(releaseEvent, 'version') ??
@@ -150,7 +151,10 @@ export async function loadReleaseDetail(
     'unknown';
   const dTag = tagValue(releaseEvent, 'd') ?? `${appId}@${version}`;
   const channel = tagValue(releaseEvent, 'c') ?? 'main';
-  const assetEventIds = releaseEvent.tags.filter((t) => t[0] === 'e').map((t) => t[1]);
+  const assetEventIds = releaseEvent.tags
+    .filter((tag) => tag[0] === 'e')
+    .map((tag) => tag[1])
+    .filter((id): id is string => Boolean(id));
 
   let assets: SoftwareAsset[] = [];
   if (assetEventIds.length > 0) {
@@ -232,9 +236,8 @@ export function buildAssetEvent(opts: {
   if (opts.platforms) {
     for (const p of opts.platforms) tags.push(['f', p]);
   }
-  if (opts.commitId ?? opts.artifact.commitId) {
-    tags.push(['commit', (opts.commitId ?? opts.artifact.commitId)!]);
-  }
+  const commitId = opts.commitId ?? opts.artifact.commitId;
+  if (commitId) tags.push(['commit', commitId]);
   if (opts.variant) tags.push(['variant', opts.variant]);
 
   return {

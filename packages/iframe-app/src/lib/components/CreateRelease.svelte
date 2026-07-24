@@ -1,5 +1,6 @@
 <script lang="ts">
-  import type { WidgetBridge, RepoContext } from 'budabit-sdk';
+  import type { WidgetBridge } from '../bridge.js';
+  import type { RepoContext } from '../types.js';
   import type { PipelineArtifactData } from '../pipelines.js';
   import type { SoftwareApplication } from '../types.js';
   import { CHANNELS } from '../types.js';
@@ -45,10 +46,10 @@
   // ── App state ─────────────────────────────────────────────────────────────
   const hasExistingApp = $derived(existingApps.length > 0);
   const defaultAppId = $derived(
-    existingApps[0]?.appId ?? (repo as any).repoName ?? ''
+    existingApps[0]?.appId ?? repo.repoName ?? ''
   );
   const defaultAppName = $derived(
-    existingApps[0]?.name ?? (repo as any).repoName ?? ''
+    existingApps[0]?.name ?? repo.repoName ?? ''
   );
 
   let appId = $state('');
@@ -108,13 +109,13 @@
     submitting = true;
     submitError = null;
 
-    const relays = getRelays((repo as any).repoRelays);
+    const relays = getRelays(repo.repoRelays);
 
     try {
       // Step 1: Create the application event if it doesn't exist
       if (!hasExistingApp) {
         publishProgress = 'Publishing application event…';
-        const repoAddr = (repo as any).repoNaddr ?? '';
+        const repoAddr = repo.repoNaddr ?? '';
         const appEvent = buildApplicationEvent({
           appId: appId.trim(),
           name: appName.trim() || appId.trim(),

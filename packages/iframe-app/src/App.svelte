@@ -1,6 +1,11 @@
 <script lang="ts">
-  import { createWidgetBridge, type WidgetBridge, type WidgetInitPayload, type RepoContext } from 'budabit-sdk';
-  import type { NostrEvent, SoftwareApplication } from './lib/types.js';
+  import { createWidgetBridge, type WidgetBridge } from './lib/bridge.js';
+  import type {
+    NostrEvent,
+    RepoContext,
+    SoftwareApplication,
+    WidgetInitPayload,
+  } from './lib/types.js';
   import ReleaseList from './lib/components/ReleaseList.svelte';
   import ReleaseDetail from './lib/components/ReleaseDetail.svelte';
   import CreateRelease from './lib/components/CreateRelease.svelte';
@@ -41,21 +46,34 @@
    * The host sends different field names depending on the message:
    *   - context:repoUpdate → { repoPubkey, repoName, repoNaddr, repoRelays, maintainers }
    *   - context:getRepo    → { pubkey, name, naddr, relays, address }
-   *   - context:update     → { repo: { repoPubkey, ... }, userPubkey, relays }
+   *   - context:update     → legacy { repo, userPubkey, relays } fallback (v1 only)
    */
-  function normalizeRepoContext(input: any): RepoContext | null {
+  function normalizeRepoContext(input: unknown): RepoContext | null {
     if (!input || typeof input !== 'object') return null;
-    // Already in the expected flat shape (context:repoUpdate)
-    if (input.repoPubkey || input.repoNaddr) return input as RepoContext;
-    // context:getRepo shape (pubkey, name, naddr, relays)
-    if (input.pubkey && input.name) {
+    const value = input as Record<string, unknown>;
+    const stringArray = (candidate: unknown): string[] =>
+      Array.isArray(candidate) ? candidate.filter((item): item is string => typeof item === 'string') : [];
+
+    // Already normalized by a current client or compatible host.
+    if (typeof value.repoPubkey === 'string' || typeof value.repoNaddr === 'string') {
       return {
-        repoPubkey: input.pubkey,
-        repoName: input.name,
-        repoNaddr: input.naddr ?? '',
-        repoRelays: input.relays ?? [],
-        maintainers: input.maintainers ?? [],
-      } as RepoContext;
+        repoPubkey: typeof value.repoPubkey === 'string' ? value.repoPubkey : '',
+        repoName: typeof value.repoName === 'string' ? value.repoName : '',
+        repoNaddr: typeof value.repoNaddr === 'string' ? value.repoNaddr : '',
+        repoRelays: stringArray(value.repoRelays),
+        maintainers: stringArray(value.maintainers),
+      };
+    }
+
+    // Runtime host shape (pubkey, name, naddr, relays).
+    if (typeof value.pubkey === 'string' && typeof value.name === 'string') {
+      return {
+        repoPubkey: value.pubkey,
+        repoName: value.name,
+        repoNaddr: typeof value.naddr === 'string' ? value.naddr : '',
+        repoRelays: stringArray(value.relays),
+        maintainers: stringArray(value.maintainers),
+      };
     }
     return null;
   }
@@ -74,8 +92,9 @@
     const offInit = b.onEvent('widget:init', (payload) => {
       dbg(`widget:init received: ${JSON.stringify(payload).slice(0, 200)}`);
       initPayload = payload as WidgetInitPayload;
-      if ((payload as any)?.repoContext) {
-        const ctx = normalizeRepoContext((payload as any).repoContext);
+      const initialRepo = payload.repoContext ?? payload.repo;
+      if (initialRepo) {
+        const ctx = normalizeRepoContext(initialRepo);
         if (ctx) {
           repoContext = ctx;
           dbg('widget:init set repoContext');
@@ -89,12 +108,12 @@
       repoContext = normalizeRepoContext(ctx) ?? repoContext;
     });
 
-    // context:update — host sends { userPubkey, relays, repo: { repoPubkey, … } }.
-    const offContextUpdate = b.onEvent('context:update', (ctx: any) => {
-      dbg(`context:update received: ${JSON.stringify(ctx).slice(0, 200)}`);
+    // Legacy v1 fallback only. context:update is deprecated and will be removed in host v2.
+    const offContextUpdate = b.onEvent('context:update', (ctx) => {
+      dbg(`legacy context:update received: ${JSON.stringify(ctx).slice(0, 200)}`);
       if (!ctx) return;
       if (ctx.userPubkey && !initPayload) {
-        initPayload = { pubkey: ctx.userPubkey, relays: ctx.relays ?? [], hostVersion: '1.0.0' } as WidgetInitPayload;
+        initPayload = { pubkey: ctx.userPubkey, relays: ctx.relays ?? [], hostVersion: '1.0.0' };
       }
       if (!repoContext) {
         const normalized = normalizeRepoContext(ctx.repo ?? ctx);

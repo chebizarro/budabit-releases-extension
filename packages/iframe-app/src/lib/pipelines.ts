@@ -1,4 +1,5 @@
-import type { WidgetBridge, RepoContext } from 'budabit-sdk';
+import type { WidgetBridge } from './bridge.js';
+import type { RepoContext } from './types.js';
 import type { Artifact, PipelineRun, ArtifactGroup, NostrEvent } from './types.js';
 import { queryEvents, getRelays, tagValue } from './bridge.js';
 

@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 // ── Nostr primitives ────────────────────────────────────────────────────────
 
 export interface NostrEvent {
@@ -9,6 +11,209 @@ export interface NostrEvent {
   content: string;
   sig: string;
 }
+
+// ── Budabit widget bridge protocol ──────────────────────────────────────────
+
+export type UnsignedEvent = {
+  kind: number;
+  content: string;
+  tags: string[][];
+  created_at: number;
+  pubkey?: string;
+};
+
+export const UnsignedEventSchema = z.object({
+  kind: z.number(),
+  content: z.string(),
+  tags: z.array(z.array(z.string())),
+  created_at: z.number(),
+  pubkey: z.string().optional(),
+});
+
+export type RepoContext = {
+  repoPubkey: string;
+  repoName: string;
+  repoNaddr?: string;
+  repoRelays: string[];
+  maintainers?: string[];
+};
+
+/** Runtime shape currently emitted by context:repoUpdate and context:getRepo. */
+export type HostRepoContext = {
+  pubkey: string;
+  name: string;
+  naddr?: string;
+  relays: string[];
+  address?: string;
+  maintainers?: string[];
+};
+
+export type WidgetInitPayload = {
+  pubkey?: string;
+  relays?: string[];
+  hostVersion?: string;
+  extensionId?: string;
+  repo?: RepoContext;
+  repoContext?: RepoContext | HostRepoContext;
+  [key: string]: unknown;
+};
+
+/** @deprecated Use WidgetInitPayload. Retained only for the v1 context:update fallback. */
+export type WidgetContext = {
+  contextId?: string;
+  userPubkey?: string;
+  relays?: string[];
+  repo?: RepoContext | HostRepoContext;
+  [key: string]: unknown;
+};
+
+export const WidgetContextSchema = z
+  .object({
+    contextId: z.string().optional(),
+    userPubkey: z.string().optional(),
+    relays: z.array(z.string()).optional(),
+  })
+  .catchall(z.unknown());
+
+export type BridgeError = { error: string };
+export type NostrPublishResponse = { status: 'ok'; result?: unknown } | BridgeError;
+export type NostrQueryResponse =
+  | { status: 'ok'; events: NostrEvent[] }
+  | { status: 'timeout'; events: NostrEvent[] }
+  | BridgeError;
+export type NostrSubscribeResponse =
+  | { status: 'ok'; subscriptionId: string }
+  | BridgeError;
+export type NostrSubscriptionEvent = { subscriptionId: string; event: NostrEvent };
+export type NostrSubscriptionEose = { subscriptionId: string; relay?: string };
+export type ToastType = 'info' | 'success' | 'warning' | 'error';
+
+export interface WidgetActionMap {
+  'nostr:publish': { req: UnsignedEvent; res: NostrPublishResponse };
+  'nostr:query': {
+    req: { relays: string[]; filter: Record<string, unknown> };
+    res: NostrQueryResponse;
+  };
+  'nostr:sign': {
+    req: UnsignedEvent;
+    res: { status: 'ok'; event: NostrEvent } | BridgeError;
+  };
+  'nostr:nip44Encrypt': {
+    req: { recipientPubkey: string; plaintext: string };
+    res: { status: 'ok'; ciphertext: string } | BridgeError;
+  };
+  'nostr:subscribe': {
+    req: { subscriptionId: string; relays: string[]; filter: Record<string, unknown> };
+    res: NostrSubscribeResponse;
+  };
+  'nostr:unsubscribe': {
+    req: { subscriptionId: string };
+    res: { status: 'ok' } | BridgeError;
+  };
+  'storage:get': {
+    req: { key: string };
+    res: { status: 'ok'; value: unknown } | BridgeError;
+  };
+  'storage:set': {
+    req: { key: string; value: unknown };
+    res: { status: 'ok' } | BridgeError;
+  };
+  'storage:remove': {
+    req: { key: string };
+    res: { status: 'ok' } | BridgeError;
+  };
+  'storage:keys': {
+    req: Record<string, never>;
+    res: { status: 'ok'; keys: string[] } | BridgeError;
+  };
+  'context:getRepo': {
+    req: Record<string, never>;
+    res: { status: 'ok'; repo: RepoContext | HostRepoContext | null } | BridgeError;
+  };
+  'ui:toast': {
+    req: { message: string; type?: ToastType };
+    res: { status: 'ok' } | BridgeError;
+  };
+  'ui:resize': {
+    req: { height?: number; width?: number };
+    res: { status: 'ok' } | BridgeError;
+  };
+  'ui:navigate': {
+    req: { path: string };
+    res: { status: 'ok' } | BridgeError;
+  };
+  'widget:init': { event: WidgetInitPayload };
+  'widget:mounted': { event: { timestamp: number } };
+  'widget:unmounting': { event: { timestamp: number } };
+  'widget:ready': { event: { timestamp: number } };
+  'context:repoUpdate': { event: RepoContext | HostRepoContext | null };
+  /** @deprecated Legacy v1 fallback; remove when host v2 support is required. */
+  'context:update': { event: WidgetContext };
+  'nostr:subscription:event': { event: NostrSubscriptionEvent };
+  /** @deprecated Legacy subscription event alias. */
+  'nostr:event': { event: NostrSubscriptionEvent };
+  'nostr:eose': { event: NostrSubscriptionEose };
+}
+
+export type WidgetAction = keyof WidgetActionMap;
+export type WidgetRequestAction = {
+  [K in WidgetAction]: 'req' extends keyof WidgetActionMap[K] ? K : never;
+}[WidgetAction];
+export type WidgetResponseAction = {
+  [K in WidgetAction]: 'res' extends keyof WidgetActionMap[K] ? K : never;
+}[WidgetAction];
+export type WidgetEventAction = {
+  [K in WidgetAction]: 'event' extends keyof WidgetActionMap[K] ? K : never;
+}[WidgetAction];
+
+export type WidgetRequestMessage<A extends WidgetRequestAction = WidgetRequestAction> = {
+  type: 'request';
+  id: string;
+  action: A;
+  payload?: WidgetActionMap[A]['req'];
+};
+export type WidgetResponseMessage<A extends WidgetResponseAction = WidgetResponseAction> = {
+  type: 'response';
+  id: string;
+  action: A;
+  payload?: WidgetActionMap[A]['res'];
+};
+export type WidgetEventMessage<A extends WidgetEventAction = WidgetEventAction> = {
+  type: 'event';
+  action: A;
+  payload?: WidgetActionMap[A]['event'];
+};
+export type WidgetUnknownMessage =
+  | { type: 'request' | 'response'; id: string; action: string; payload?: unknown }
+  | { type: 'event'; action: string; payload?: unknown; id?: never };
+export type WidgetWireMessage =
+  | WidgetRequestMessage
+  | WidgetResponseMessage
+  | WidgetEventMessage
+  | WidgetUnknownMessage;
+
+export const WidgetRequestMessageSchema = z.object({
+  type: z.literal('request'),
+  id: z.string(),
+  action: z.string(),
+  payload: z.unknown().optional(),
+});
+export const WidgetResponseMessageSchema = z.object({
+  type: z.literal('response'),
+  id: z.string(),
+  action: z.string(),
+  payload: z.unknown().optional(),
+});
+export const WidgetEventMessageSchema = z.object({
+  type: z.literal('event'),
+  action: z.string(),
+  payload: z.unknown().optional(),
+});
+export const WidgetWireMessageSchema = z.union([
+  WidgetRequestMessageSchema,
+  WidgetResponseMessageSchema,
+  WidgetEventMessageSchema,
+]);
 
 // ── NIP-82 Constants ─────────────────────────────────────────────────────────
 

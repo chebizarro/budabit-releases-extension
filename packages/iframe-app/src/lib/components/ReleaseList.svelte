@@ -1,9 +1,9 @@
 <script lang="ts">
-  import type { WidgetBridge, RepoContext } from 'budabit-sdk';
-  import type { NostrEvent, SoftwareApplication } from '../types.js';
+  import type { WidgetBridge } from '../bridge.js';
+  import type { NostrEvent, RepoContext, SoftwareApplication } from '../types.js';
   import { RELEASE_KIND } from '../types.js';
   import { parseReleaseListItem, formatDate, loadRepoApps } from '../releases.js';
-  import { getRelays, openSubscription, closeSubscription, queryEvents } from '../bridge.js';
+  import { getRelays } from '../bridge.js';
 
   interface Props {
     bridge: WidgetBridge;
@@ -33,9 +33,13 @@
     releaseEvents = new Map();
     apps = [];
 
-    const relays = getRelays((repo as any).repoRelays);
-    const subId = 'releases-list-' + Math.random().toString(36).slice(2);
-    let cleanup: (() => void) | null = null;
+    const relays = getRelays(repo.repoRelays);
+    const requestedSubscriptionId = 'releases-list-' + Math.random().toString(36).slice(2);
+    let hostSubscriptionId: string | null = null;
+    let subscription: Awaited<ReturnType<WidgetBridge['subscribe']>> | null = null;
+    let disposed = false;
+    let offEvent: () => void = () => {};
+    let offEose: () => void = () => {};
 
     // Two-phase: discover apps linked to this repo, then subscribe to their releases.
     (async () => {
@@ -47,8 +51,8 @@
         // If no apps exist, also try querying releases authored by the repo maintainers
         // (covers first-time use before an app event exists)
         const appIds = discovered.map((a) => a.appId).filter(Boolean);
-        const maintainers = (repo as any).maintainers ?? [];
-        const repoPubkey = (repo as any).repoPubkey ?? '';
+        const maintainers = repo.maintainers ?? [];
+        const repoPubkey = repo.repoPubkey;
 
         // Build subscription filter
         let filter: Record<string, unknown>;
@@ -67,25 +71,27 @@
         }
 
         // Phase 2: subscribe to releases matching the filter
-        const offEvent = bridge.onEvent('nostr:event', (payload: unknown) => {
-          const p = payload as { subscriptionId: string; event: NostrEvent } | null;
-          if (!p || p.subscriptionId !== subId) return;
-          releaseEvents = new Map(releaseEvents).set(p.event.id, p.event);
+        offEvent = bridge.onEvent('nostr:subscription:event', (payload) => {
+          if (payload.subscriptionId !== hostSubscriptionId) return;
+          releaseEvents = new Map(releaseEvents).set(payload.event.id, payload.event);
         });
 
-        const offEose = bridge.onEvent('nostr:eose', (payload: unknown) => {
-          const p = payload as { subscriptionId: string } | null;
-          if (!p || p.subscriptionId !== subId) return;
+        offEose = bridge.onEvent('nostr:eose', (payload) => {
+          if (payload.subscriptionId !== hostSubscriptionId) return;
           loading = false;
         });
 
-        await openSubscription(bridge, relays, filter, subId);
+        subscription = await bridge.subscribe({
+          subscriptionId: requestedSubscriptionId,
+          relays,
+          filter,
+        });
+        hostSubscriptionId = subscription.subscriptionId;
 
-        cleanup = () => {
-          offEvent();
-          offEose();
-          closeSubscription(bridge, subId);
-        };
+        if (disposed) {
+          await subscription.unsubscribe().catch(() => {});
+          subscription = null;
+        }
       } catch (err) {
         error = err instanceof Error ? err.message : String(err);
         loading = false;
@@ -98,8 +104,12 @@
     }, 15000);
 
     return () => {
+      disposed = true;
       clearTimeout(timer);
-      cleanup?.();
+      offEvent();
+      offEose();
+      void subscription?.unsubscribe().catch(() => {});
+      subscription = null;
     };
   });
 
