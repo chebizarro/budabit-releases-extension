@@ -50,11 +50,6 @@
     "typescript-eslint": "^8.18.1",
     "vitest": "^2.1.8"
   },
-  "pnpm": {
-    "overrides": {
-      "budabit-sdk": "file:/Users/bizarro/Documents/Projects/budabit/flotilla-extensions/budabit-extension-template/packages/sdk"
-    }
-  },
   "engines": {
     "node": ">=18.0.0",
     "pnpm": ">=8.0.0"
