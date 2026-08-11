@@ -6,6 +6,7 @@
     type WidgetBridge,
     type WidgetInitPayload,
   } from 'budabit-sdk';
+  import { onMount } from 'svelte';
   import { watchHostTheme } from './lib/host-theme';
   import type { SoftwareApplication } from './lib/types.js';
   import ReleaseList from './lib/components/ReleaseList.svelte';
@@ -80,7 +81,7 @@
     return null;
   }
 
-  $effect(() => {
+  onMount(() => {
     const b = createWidgetBridge({
       targetWindow: window.parent,
       targetOrigin: '*',
