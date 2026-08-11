@@ -15,6 +15,65 @@ export function getRelays(repoRelays: string[] | undefined): string[] {
   return [...new Set(merged.filter(Boolean))];
 }
 
+// ── Release list cache (stale-while-revalidate) ─────────────────────────────
+
+const LIST_CACHE_KEY = 'releases-list-cache-v1';
+const LIST_CACHE_MAX_EVENTS = 50;
+
+export interface CachedReleaseState {
+  apps: SoftwareApplication[];
+  events: NostrEvent[];
+}
+
+/**
+ * Read the cached release list from host storage (repo-scoped).
+ * Returns null when there is no cache, or when the widget lacks
+ * storage permissions — callers just fall through to a live load.
+ */
+export async function loadCachedReleaseState(
+  bridge: WidgetBridge
+): Promise<CachedReleaseState | null> {
+  try {
+    const response = (await bridge.request('storage:get' as never, {
+      key: LIST_CACHE_KEY,
+      repoScoped: true,
+    } as never)) as { data?: { apps?: unknown; events?: unknown } } | null;
+    const data = response?.data;
+    if (!data || !Array.isArray(data.events)) return null;
+    return {
+      apps: Array.isArray(data.apps) ? (data.apps as SoftwareApplication[]) : [],
+      events: data.events as NostrEvent[],
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist the release list to host storage (repo-scoped, best effort).
+ * JSON round-trip strips Svelte reactive proxies so the payload is
+ * structured-cloneable, and trimming keeps us under the host's 1MB cap.
+ */
+export async function saveCachedReleaseState(
+  bridge: WidgetBridge,
+  apps: SoftwareApplication[],
+  events: NostrEvent[]
+): Promise<void> {
+  try {
+    const trimmed = [...events]
+      .sort((a, b) => b.created_at - a.created_at)
+      .slice(0, LIST_CACHE_MAX_EVENTS);
+    const data = JSON.parse(JSON.stringify({ apps, events: trimmed, ts: Date.now() }));
+    await bridge.request('storage:set' as never, {
+      key: LIST_CACHE_KEY,
+      repoScoped: true,
+      data,
+    } as never);
+  } catch {
+    // Best effort — cache misses are always recoverable via live load.
+  }
+}
+
 export async function queryEvents(
   bridge: WidgetBridge,
   relays: string[],

@@ -3,7 +3,7 @@
   import type { SoftwareApplication } from '../types.js';
   import { RELEASE_KIND } from '../types.js';
   import { parseReleaseListItem, formatDate, loadRepoApps } from '../releases.js';
-  import { getRelays } from '../releases.js';
+  import { getRelays, loadCachedReleaseState, saveCachedReleaseState } from '../releases.js';
 
   interface Props {
     bridge: WidgetBridge;
@@ -40,6 +40,30 @@
     let disposed = false;
     let offEvent: () => void = () => {};
     let offEose: () => void = () => {};
+    let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleCacheSave = () => {
+      if (saveTimer) clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => {
+        saveTimer = null;
+        void saveCachedReleaseState(bridge, apps, [...releaseEvents.values()]);
+      }, 1000);
+    };
+
+    // Stale-while-revalidate: render the cached list instantly while the live
+    // discovery + subscription below refreshes it in the background.
+    (async () => {
+      const cached = await loadCachedReleaseState(bridge);
+      if (disposed || !cached || cached.events.length === 0) return;
+      // Merge under live data: anything already received from the
+      // subscription wins over the cache.
+      releaseEvents = new Map([
+        ...cached.events.map((e) => [e.id, e] as const),
+        ...releaseEvents,
+      ]);
+      if (apps.length === 0 && cached.apps.length > 0) apps = cached.apps;
+      loading = false;
+    })();
 
     // Two-phase: discover apps linked to this repo, then subscribe to their releases.
     (async () => {
@@ -76,11 +100,13 @@
         offEvent = bridge.onEvent('nostr:subscription:event', (payload) => {
           if (payload.subscriptionId !== hostSubscriptionId) return;
           releaseEvents = new Map(releaseEvents).set(payload.event.id, payload.event);
+          scheduleCacheSave();
         });
 
         offEose = bridge.onEvent('nostr:eose', (payload) => {
           if (payload.subscriptionId !== hostSubscriptionId) return;
           loading = false;
+          scheduleCacheSave();
         });
 
         subscription = await bridge.subscribe({
@@ -95,7 +121,11 @@
           subscription = null;
         }
       } catch (err) {
-        error = err instanceof Error ? err.message : String(err);
+        // Keep showing cached data if we have it; only surface the error
+        // when there is nothing else to render.
+        if (releaseEvents.size === 0) {
+          error = err instanceof Error ? err.message : String(err);
+        }
         loading = false;
       }
     })();
@@ -108,6 +138,7 @@
     return () => {
       disposed = true;
       clearTimeout(timer);
+      if (saveTimer) clearTimeout(saveTimer);
       offEvent();
       offEose();
       void subscription?.unsubscribe().catch(() => {});
