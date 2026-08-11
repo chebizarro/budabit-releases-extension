@@ -51,7 +51,9 @@
         // If no apps exist, also try querying releases authored by the repo maintainers
         // (covers first-time use before an app event exists)
         const appIds = discovered.map((a) => a.appId).filter(Boolean);
-        const maintainers = repo.maintainers ?? [];
+        // Spread to plain arrays: `repo` is a reactive $state proxy, and proxies
+        // can't be structured-cloned through postMessage.
+        const maintainers = [...(repo.maintainers ?? [])];
         const repoPubkey = repo.repoPubkey;
 
         // Build subscription filter
