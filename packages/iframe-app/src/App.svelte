@@ -127,10 +127,35 @@
       }
     });
 
+    // Actively fetch context if widget:init arrived before our listeners were
+    // ready (the host sends it right after the iframe `load` event, which can
+    // fire before this component mounts).
+    const fallbackTimer = setTimeout(() => {
+      if (repoContext) return;
+      dbg('no context after 500ms — requesting context:getRepo');
+      b.request('context:getRepo', {})
+        .then((response) => {
+          if (repoContext || !response || typeof response !== 'object') return;
+          const compat = response as { repo?: unknown; repoContext?: unknown };
+          const fallbackRepo = compat.repo ?? compat.repoContext;
+          const ctx = normalizeRepoContext(fallbackRepo);
+          if (ctx) {
+            repoContext = ctx;
+            dbg('context:getRepo fallback set repoContext');
+          } else {
+            dbg(`context:getRepo returned no usable context: ${JSON.stringify(response).slice(0, 200)}`);
+          }
+        })
+        .catch((err) => {
+          dbg(`context:getRepo fallback failed: ${err?.message ?? err}`);
+        });
+    }, 500);
+
     dbg('signalReady() called');
     b.signalReady();
 
     return () => {
+      clearTimeout(fallbackTimer);
       offTheme();
       offInit();
       offRepo();
