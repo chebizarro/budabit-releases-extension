@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { marked } from 'marked';
+  import DOMPurify from 'dompurify';
   import type { NostrEvent, RepoContext, WidgetBridge } from 'budabit-sdk';
   import type { SoftwareRelease } from '../types.js';
   import {
@@ -22,6 +24,26 @@
   let release = $state<SoftwareRelease | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
+
+  // Open every rendered link in a new tab — in-place navigation would replace
+  // the widget iframe itself.
+  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+    if (node.tagName === 'A') {
+      node.setAttribute('target', '_blank');
+      node.setAttribute('rel', 'noopener noreferrer');
+    }
+  });
+
+  /** Release notes are untrusted event content: parse as markdown, sanitize the HTML. */
+  const notesHtml = $derived.by(() => {
+    const notes = release?.releaseNotes;
+    if (!notes) return '';
+    try {
+      return DOMPurify.sanitize(marked.parse(notes, { async: false, gfm: true }) as string);
+    } catch {
+      return '';
+    }
+  });
 
   $effect(() => {
     if (!bridge || !releaseEvent) return;
@@ -77,7 +99,11 @@
       {#if release.releaseNotes}
         <section class="notes-section">
           <h3>Release Notes</h3>
-          <pre class="release-notes">{release.releaseNotes}</pre>
+          {#if notesHtml}
+            <div class="release-notes markdown-body">{@html notesHtml}</div>
+          {:else}
+            <pre class="release-notes release-notes-plain">{release.releaseNotes}</pre>
+          {/if}
         </section>
       {/if}
 
@@ -102,7 +128,12 @@
                 {#each release.assets as asset (asset.eventId)}
                   <tr>
                     <td class="col-filename">
-                      {asset.filename}
+                      <a
+                        class="filename-link"
+                        href={assetDownloadUrl(asset)}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="Download {asset.filename}">{asset.filename}</a>
                       {#if asset.variant}
                         <span class="variant-label">{asset.variant}</span>
                       {/if}
@@ -261,7 +292,6 @@
 
   .release-notes {
     margin: 0;
-    white-space: pre-wrap;
     font-family: inherit;
     font-size: 0.875rem;
     line-height: 1.6;
@@ -271,6 +301,109 @@
     border-radius: 6px;
     padding: 0.85rem 1rem;
     overflow-x: auto;
+  }
+
+  .release-notes-plain {
+    white-space: pre-wrap;
+  }
+
+  /* Rendered markdown */
+  .markdown-body :global(h1),
+  .markdown-body :global(h2),
+  .markdown-body :global(h3),
+  .markdown-body :global(h4) {
+    margin: 1em 0 0.4em;
+    color: var(--ext-text);
+    font-weight: 600;
+    line-height: 1.3;
+    border: none;
+    padding: 0;
+  }
+
+  .markdown-body :global(h1) { font-size: 1.15rem; }
+  .markdown-body :global(h2) { font-size: 1.05rem; }
+  .markdown-body :global(h3) { font-size: 0.95rem; }
+  .markdown-body :global(h4) { font-size: 0.9rem; }
+
+  .markdown-body :global(> :first-child) { margin-top: 0; }
+  .markdown-body :global(> :last-child) { margin-bottom: 0; }
+
+  .markdown-body :global(p) {
+    margin: 0.5em 0;
+  }
+
+  .markdown-body :global(ul),
+  .markdown-body :global(ol) {
+    margin: 0.5em 0;
+    padding-left: 1.5em;
+  }
+
+  .markdown-body :global(li) {
+    margin: 0.2em 0;
+  }
+
+  .markdown-body :global(a) {
+    color: var(--ext-accent);
+    text-decoration: none;
+  }
+
+  .markdown-body :global(a:hover) {
+    text-decoration: underline;
+  }
+
+  .markdown-body :global(code) {
+    font-family: monospace;
+    font-size: 0.82em;
+    background: var(--ext-surface);
+    border: 1px solid var(--ext-border);
+    border-radius: 3px;
+    padding: 0.1em 0.35em;
+  }
+
+  .markdown-body :global(pre) {
+    background: var(--ext-code-bg);
+    color: var(--ext-code-text);
+    border-radius: 6px;
+    padding: 0.75rem 0.9rem;
+    overflow-x: auto;
+    margin: 0.6em 0;
+  }
+
+  .markdown-body :global(pre code) {
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    font-size: 0.8rem;
+  }
+
+  .markdown-body :global(blockquote) {
+    margin: 0.6em 0;
+    padding: 0.1em 0 0.1em 0.9em;
+    border-left: 3px solid var(--ext-border-strong);
+    color: var(--ext-text-muted);
+  }
+
+  .markdown-body :global(hr) {
+    border: none;
+    border-top: 1px solid var(--ext-border);
+    margin: 1em 0;
+  }
+
+  .markdown-body :global(img) {
+    max-width: 100%;
+  }
+
+  .markdown-body :global(table) {
+    border-collapse: collapse;
+    margin: 0.6em 0;
+  }
+
+  .markdown-body :global(th),
+  .markdown-body :global(td) {
+    border: 1px solid var(--ext-border);
+    padding: 0.3em 0.6em;
+    font-size: 0.82rem;
   }
 
   .no-artifacts {
@@ -318,6 +451,15 @@
   .col-filename {
     font-family: monospace;
     word-break: break-all;
+  }
+
+  .filename-link {
+    color: var(--ext-accent);
+    text-decoration: none;
+  }
+
+  .filename-link:hover {
+    text-decoration: underline;
   }
 
   .variant-label {
