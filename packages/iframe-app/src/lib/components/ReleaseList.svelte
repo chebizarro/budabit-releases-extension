@@ -96,11 +96,23 @@
           return;
         }
 
-        // Phase 2: subscribe to releases matching the filter
-        offEvent = bridge.onEvent('nostr:subscription:event', (payload) => {
-          if (payload.subscriptionId !== hostSubscriptionId) return;
-          releaseEvents = new Map(releaseEvents).set(payload.event.id, payload.event);
+        // Phase 2: subscribe to releases matching the filter.
+        // The host can start delivering events before the subscribe response
+        // arrives (fast relays / host-cached events), so buffer anything that
+        // shows up before we know our subscription id — dropped events are
+        // never re-delivered (host-side dedup).
+        let pendingEvents: {subscriptionId: string; event: NostrEvent}[] | null = [];
+        const applyEvent = (event: NostrEvent) => {
+          releaseEvents = new Map(releaseEvents).set(event.id, event);
           scheduleCacheSave();
+        };
+        offEvent = bridge.onEvent('nostr:subscription:event', (payload) => {
+          if (hostSubscriptionId === null) {
+            pendingEvents?.push(payload);
+            return;
+          }
+          if (payload.subscriptionId !== hostSubscriptionId) return;
+          applyEvent(payload.event);
         });
 
         offEose = bridge.onEvent('nostr:eose', (payload) => {
@@ -115,6 +127,18 @@
           filter,
         });
         hostSubscriptionId = subscription.subscriptionId;
+
+        // Flush events that arrived while the subscribe response was in flight.
+        for (const pending of pendingEvents ?? []) {
+          if (pending.subscriptionId === hostSubscriptionId) applyEvent(pending.event);
+        }
+        pendingEvents = null;
+
+        // Older hosts never send nostr:eose — don't leave the spinner up for
+        // the full 15s safety timeout once the subscription is live.
+        setTimeout(() => {
+          if (!disposed) loading = false;
+        }, 3000);
 
         if (disposed) {
           await subscription.unsubscribe().catch(() => {});
