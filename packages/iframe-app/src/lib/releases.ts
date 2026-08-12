@@ -8,7 +8,11 @@ import type {
 } from './types.js';
 import { APP_KIND, RELEASE_KIND, ASSET_KIND } from './types.js';
 
-export const FALLBACK_RELAYS = ['wss://relay.sharegap.net', 'wss://nos.lol'];
+export const FALLBACK_RELAYS = [
+  'wss://relay.zapstore.dev', // where zapstore-published apps/releases live
+  'wss://relay.sharegap.net',
+  'wss://nos.lol',
+];
 
 export function getRelays(repoRelays: string[] | undefined): string[] {
   const merged = [...(repoRelays ?? []), ...FALLBACK_RELAYS];
@@ -209,39 +213,79 @@ export function parseApplication(event: NostrEvent): SoftwareApplication {
 // ── Application discovery ────────────────────────────────────────────────────
 
 /**
- * Find kind 32267 Software Application events that reference this repo
- * via an `a` tag pointing to its 30617 address.
+ * Does a 32267 application belong to this repo?
+ * Zapstore-style apps link via a `repository` URL tag (github.com/owner/name);
+ * NIP-82-style apps link via an `a` tag with the 30617 coordinate.
+ */
+export function appMatchesRepo(app: SoftwareApplication, repo: RepoContext): boolean {
+  // Explicit coordinate link (NIP-34/82)
+  if (app.repoAddress && repo.repoPubkey && app.repoAddress.includes(repo.repoPubkey)) {
+    return true;
+  }
+
+  const name = (repo.repoName ?? '').toLowerCase();
+  if (!name) return false;
+
+  // Repository URL tail match (zapstore convention): .../owner/<name>
+  const repoUrl = (app.repositoryUrl ?? '').toLowerCase().replace(/\.git$/, '').replace(/\/+$/, '');
+  if (repoUrl && repoUrl.split('/').pop() === name) return true;
+
+  // App display name matches repo name
+  if (app.name && app.name.toLowerCase() === name) return true;
+
+  return false;
+}
+
+/**
+ * Find kind 32267 Software Application events that belong to this repo.
+ * Two lookups run in parallel:
+ *  - by `#a` coordinate (NIP-82 linkage), when the address is coordinate-form
+ *  - by authors (repo owner + maintainers) — zapstore publishes apps signed by
+ *    the developer's own key, linked to the repo only via a `repository` URL
  */
 export async function loadRepoApps(
   bridge: WidgetBridge,
   repo: RepoContext
 ): Promise<SoftwareApplication[]> {
   const relays = getRelays(repo.repoRelays);
-  const repoAddr = repo.repoNaddr ?? '';
-  if (!repoAddr) return [];
 
-  // Resolve the coordinate form: 30617:pubkey:identifier
-  const coordinate = repoAddr;
-  if (!coordinate.includes(':')) {
-    // It's a bech32 naddr — we can't easily decode it in pure JS without nostr-tools.
-    // Try querying by author instead.
-    const pubkey = repo.repoPubkey;
-    if (!pubkey) return [];
-    const events = await queryEvents(bridge, relays, {
-      kinds: [APP_KIND],
-      authors: [pubkey],
-    });
-    return events
-      .map(parseApplication)
-      .filter((a) => a.repoAddress?.includes(pubkey));
+  const authors = [
+    ...new Set([repo.repoPubkey, ...(repo.maintainers ?? [])].filter(Boolean)),
+  ] as string[];
+
+  const coordinate = repo.repoNaddr ?? '';
+  const queries: Promise<NostrEvent[]>[] = [];
+
+  if (coordinate.includes(':')) {
+    queries.push(
+      queryEvents(bridge, relays, {kinds: [APP_KIND], '#a': [coordinate]}).catch(() => [])
+    );
+  }
+  if (authors.length > 0) {
+    queries.push(
+      queryEvents(bridge, relays, {kinds: [APP_KIND], authors}).catch(() => [])
+    );
+  }
+  if (queries.length === 0) return [];
+
+  const results = (await Promise.all(queries)).flat();
+
+  // Dedupe by event id, parse, keep only apps belonging to this repo,
+  // then keep the newest event per app identifier (32267 is addressable).
+  const seen = new Set<string>();
+  const byAppId = new Map<string, SoftwareApplication>();
+  for (const event of results) {
+    if (seen.has(event.id)) continue;
+    seen.add(event.id);
+    const app = parseApplication(event);
+    if (!appMatchesRepo(app, repo)) continue;
+    const existing = byAppId.get(app.appId);
+    if (!existing || app.createdAt > existing.createdAt) {
+      byAppId.set(app.appId, app);
+    }
   }
 
-  const events = await queryEvents(bridge, relays, {
-    kinds: [APP_KIND],
-    '#a': [coordinate],
-  });
-
-  return events.map(parseApplication);
+  return [...byAppId.values()];
 }
 
 // ── Release data loading ─────────────────────────────────────────────────────
