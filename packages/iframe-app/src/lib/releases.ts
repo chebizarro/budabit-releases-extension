@@ -14,9 +14,17 @@ export const FALLBACK_RELAYS = [
   'wss://nos.lol',
 ];
 
+/** Hosts cap extension subscriptions at 8 relays. */
+const MAX_QUERY_RELAYS = 8;
+
 export function getRelays(repoRelays: string[] | undefined): string[] {
-  const merged = [...(repoRelays ?? []), ...FALLBACK_RELAYS];
-  return [...new Set(merged.filter(Boolean))];
+  // The zapstore relay comes first — it's where zapstore-published apps,
+  // releases, and assets actually live — followed by the repo's own relays,
+  // then generic fallbacks. Capped to the host's per-subscription relay limit,
+  // so with many repo relays the generic fallbacks are dropped first.
+  const [zapstoreRelay, ...genericFallbacks] = FALLBACK_RELAYS;
+  const merged = [zapstoreRelay, ...(repoRelays ?? []), ...genericFallbacks];
+  return [...new Set(merged.filter(Boolean))].slice(0, MAX_QUERY_RELAYS);
 }
 
 // ── Release list cache (stale-while-revalidate) ─────────────────────────────
