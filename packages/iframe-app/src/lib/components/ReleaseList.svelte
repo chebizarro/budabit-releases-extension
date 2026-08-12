@@ -2,7 +2,7 @@
   import type { NostrEvent, RepoContext, WidgetBridge } from 'budabit-sdk';
   import type { SoftwareApplication } from '../types.js';
   import { RELEASE_KIND } from '../types.js';
-  import { parseReleaseListItem, formatDate, loadRepoApps } from '../releases.js';
+  import { parseReleaseListItem, formatDate, loadRepoApps, platformLabel } from '../releases.js';
   import { getRelays, queryEvents, loadCachedReleaseState, saveCachedReleaseState } from '../releases.js';
 
   interface Props {
@@ -24,6 +24,61 @@
   const sortedReleases = $derived(
     [...releaseEvents.values()].sort((a, b) => b.created_at - a.created_at)
   );
+
+  // ── Filtering + pagination ────────────────────────────────────────────────
+  const PAGE_SIZE = 20;
+  let versionFilter = $state('');
+  let platformFilter = $state('all');
+  let dateFilter = $state('all'); // 'all' | days as string
+  let page = $state(1);
+
+  function eventVersion(event: NostrEvent): string {
+    return (
+      event.tags.find((t) => t[0] === 'version')?.[1] ??
+      event.tags.find((t) => t[0] === 'd')?.[1]?.split('@').pop() ??
+      ''
+    );
+  }
+
+  function eventPlatforms(event: NostrEvent): string[] {
+    return event.tags.filter((t) => t[0] === 'f').map((t) => t[1]).filter(Boolean);
+  }
+
+  const availablePlatforms = $derived(
+    [...new Set([...releaseEvents.values()].flatMap(eventPlatforms))].sort()
+  );
+
+  const filteredReleases = $derived.by(() => {
+    const v = versionFilter.trim().toLowerCase();
+    const cutoff =
+      dateFilter === 'all' ? 0 : Math.floor(Date.now() / 1000) - Number(dateFilter) * 86400;
+    return sortedReleases.filter((event) => {
+      if (cutoff && event.created_at < cutoff) return false;
+      if (v && !eventVersion(event).toLowerCase().includes(v)) return false;
+      if (platformFilter !== 'all' && !eventPlatforms(event).includes(platformFilter)) return false;
+      return true;
+    });
+  });
+
+  const totalPages = $derived(Math.max(1, Math.ceil(filteredReleases.length / PAGE_SIZE)));
+  const currentPage = $derived(Math.min(page, totalPages));
+  const pagedReleases = $derived(
+    filteredReleases.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE)
+  );
+  const hasActiveFilters = $derived(
+    versionFilter.trim() !== '' || platformFilter !== 'all' || dateFilter !== 'all'
+  );
+
+  function resetPage() {
+    page = 1;
+  }
+
+  function clearFilters() {
+    versionFilter = '';
+    platformFilter = 'all';
+    dateFilter = 'all';
+    page = 1;
+  }
 
   $effect(() => {
     if (!bridge || !repo) return;
@@ -203,6 +258,38 @@
     {/if}
   </div>
 
+  {#if sortedReleases.length > 0}
+    <div class="filter-bar">
+      <input
+        class="filter-input"
+        type="search"
+        placeholder="Filter version…"
+        bind:value={versionFilter}
+        oninput={resetPage}
+      />
+      {#if availablePlatforms.length > 0}
+        <select class="filter-select" bind:value={platformFilter} onchange={resetPage}>
+          <option value="all">All platforms</option>
+          {#each availablePlatforms as platform (platform)}
+            <option value={platform}>{platformLabel([platform])}</option>
+          {/each}
+        </select>
+      {/if}
+      <select class="filter-select" bind:value={dateFilter} onchange={resetPage}>
+        <option value="all">Any time</option>
+        <option value="30">Last 30 days</option>
+        <option value="90">Last 90 days</option>
+        <option value="365">Last year</option>
+      </select>
+      {#if hasActiveFilters}
+        <button class="btn-clear" onclick={clearFilters}>Clear</button>
+        <span class="filter-count">
+          {filteredReleases.length} of {sortedReleases.length}
+        </span>
+      {/if}
+    </div>
+  {/if}
+
   {#if loading}
     <div class="state-message">Loading releases…</div>
   {:else if error}
@@ -217,9 +304,15 @@
         <p class="empty-hint">No releases have been published for this repository.</p>
       {/if}
     </div>
+  {:else if filteredReleases.length === 0}
+    <div class="empty-state">
+      <p class="empty-title">No matching releases</p>
+      <p class="empty-hint">No releases match the current filters.</p>
+      <button class="btn-clear" onclick={clearFilters}>Clear filters</button>
+    </div>
   {:else}
     <ul class="releases">
-      {#each sortedReleases as event (event.id)}
+      {#each pagedReleases as event (event.id)}
         {@const item = parseReleaseListItem(event)}
         {@const channel = channelBadge(event)}
         <li class="release-card">
@@ -246,6 +339,20 @@
         </li>
       {/each}
     </ul>
+
+    {#if totalPages > 1}
+      <div class="pagination">
+        <button
+          class="btn-page"
+          disabled={currentPage <= 1}
+          onclick={() => (page = currentPage - 1)}>← Prev</button>
+        <span class="page-indicator">Page {currentPage} of {totalPages}</span>
+        <button
+          class="btn-page"
+          disabled={currentPage >= totalPages}
+          onclick={() => (page = currentPage + 1)}>Next →</button>
+      </div>
+    {/if}
   {/if}
 </div>
 
@@ -281,6 +388,90 @@
 
   .btn-primary:hover {
     background: var(--ext-accent-hover);
+  }
+
+  .filter-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .filter-input,
+  .filter-select {
+    padding: 0.35rem 0.6rem;
+    background: var(--ext-surface);
+    color: var(--ext-text);
+    border: 1px solid var(--ext-border);
+    border-radius: 6px;
+    font-size: 0.8rem;
+    font-family: inherit;
+  }
+
+  .filter-input {
+    flex: 1 1 140px;
+    min-width: 120px;
+  }
+
+  .filter-input:focus,
+  .filter-select:focus {
+    outline: none;
+    border-color: var(--ext-accent);
+  }
+
+  .btn-clear {
+    padding: 0.35rem 0.6rem;
+    background: none;
+    color: var(--ext-accent);
+    border: 1px solid var(--ext-border);
+    border-radius: 6px;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+
+  .btn-clear:hover {
+    border-color: var(--ext-accent);
+    background: var(--ext-accent-soft-2);
+  }
+
+  .filter-count {
+    font-size: 0.75rem;
+    color: var(--ext-text-muted);
+    white-space: nowrap;
+  }
+
+  .pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    margin-top: 1rem;
+  }
+
+  .btn-page {
+    padding: 0.35rem 0.75rem;
+    background: var(--ext-surface);
+    color: var(--ext-accent);
+    border: 1px solid var(--ext-border);
+    border-radius: 6px;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+
+  .btn-page:hover:not(:disabled) {
+    border-color: var(--ext-accent);
+    background: var(--ext-accent-soft-2);
+  }
+
+  .btn-page:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  .page-indicator {
+    font-size: 0.8rem;
+    color: var(--ext-text-muted);
   }
 
   .state-message,
