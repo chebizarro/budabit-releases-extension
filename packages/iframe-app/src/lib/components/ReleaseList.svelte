@@ -3,7 +3,7 @@
   import type { SoftwareApplication } from '../types.js';
   import { RELEASE_KIND } from '../types.js';
   import { parseReleaseListItem, formatDate, loadRepoApps } from '../releases.js';
-  import { getRelays, loadCachedReleaseState, saveCachedReleaseState } from '../releases.js';
+  import { getRelays, queryEvents, loadCachedReleaseState, saveCachedReleaseState } from '../releases.js';
 
   interface Props {
     bridge: WidgetBridge;
@@ -96,7 +96,26 @@
           return;
         }
 
-        // Phase 2: subscribe to releases matching the filter.
+        // Phase 2a: one-shot backfill of stored releases. The host's query
+        // path runs at normal priority and is not subject to the background
+        // subscription scheduler, so stored events arrive reliably even when
+        // relays are saturated.
+        queryEvents(bridge, relays, filter)
+          .then((events) => {
+            if (disposed) return;
+            if (events.length > 0) {
+              const next = new Map(releaseEvents);
+              for (const event of events) next.set(event.id, event);
+              releaseEvents = next;
+              scheduleCacheSave();
+            }
+            loading = false;
+          })
+          .catch(() => {
+            // Subscription below still covers us.
+          });
+
+        // Phase 2b: subscribe for live updates matching the filter.
         // The host can start delivering events before the subscribe response
         // arrives (fast relays / host-cached events), so buffer anything that
         // shows up before we know our subscription id — dropped events are
