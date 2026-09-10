@@ -1,7 +1,8 @@
 <script lang="ts">
   import { marked } from 'marked';
   import DOMPurify from 'dompurify';
-  import type { NostrEvent, RepoContext, WidgetBridge } from 'budabit-sdk';
+  import type { NostrEvent, WidgetBridge } from 'budabit-sdk';
+  import type { RepoContext } from '../context.js';
   import type { SoftwareRelease } from '../types.js';
   import {
     loadReleaseDetail,

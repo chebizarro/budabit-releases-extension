@@ -1,4 +1,6 @@
-import type { NostrEvent, RepoContext, WidgetBridge } from 'budabit-sdk';
+import type { NostrEvent, WidgetBridge } from 'budabit-sdk';
+import { normalizeRelays, type RepoContext } from './context.js';
+import { authorizedApplication, replacements, verifiedEvent } from './trust.js';
 import type {
   SoftwareRelease,
   SoftwareAsset,
@@ -24,7 +26,7 @@ export function getRelays(repoRelays: string[] | undefined): string[] {
   // so with many repo relays the generic fallbacks are dropped first.
   const [zapstoreRelay, ...genericFallbacks] = FALLBACK_RELAYS;
   const merged = [zapstoreRelay, ...(repoRelays ?? []), ...genericFallbacks];
-  return [...new Set(merged.filter(Boolean))].slice(0, MAX_QUERY_RELAYS);
+  return normalizeRelays(merged).slice(0, MAX_QUERY_RELAYS);
 }
 
 // ── Release list cache (stale-while-revalidate) ─────────────────────────────
@@ -93,7 +95,7 @@ export async function queryEvents(
 ): Promise<NostrEvent[]> {
   const response = await bridge.request('nostr:query', { relays, filter });
   if ('error' in response) throw new Error(response.error);
-  return response.events ?? [];
+  return (response.events ?? []).map(verifiedEvent).filter((e): e is NostrEvent => e !== null);
 }
 
 export async function signEvent(
@@ -226,22 +228,7 @@ export function parseApplication(event: NostrEvent): SoftwareApplication {
  * NIP-82-style apps link via an `a` tag with the 30617 coordinate.
  */
 export function appMatchesRepo(app: SoftwareApplication, repo: RepoContext): boolean {
-  // Explicit coordinate link (NIP-34/82)
-  if (app.repoAddress && repo.repoPubkey && app.repoAddress.includes(repo.repoPubkey)) {
-    return true;
-  }
-
-  const name = (repo.repoName ?? '').toLowerCase();
-  if (!name) return false;
-
-  // Repository URL tail match (zapstore convention): .../owner/<name>
-  const repoUrl = (app.repositoryUrl ?? '').toLowerCase().replace(/\.git$/, '').replace(/\/+$/, '');
-  if (repoUrl && repoUrl.split('/').pop() === name) return true;
-
-  // App display name matches repo name
-  if (app.name && app.name.toLowerCase() === name) return true;
-
-  return false;
+  return app.repoAddress === repo.repoAddress && repo.maintainers.includes(app.pubkey);
 }
 
 /**
@@ -261,39 +248,9 @@ export async function loadRepoApps(
     ...new Set([repo.repoPubkey, ...(repo.maintainers ?? [])].filter(Boolean)),
   ] as string[];
 
-  const coordinate = repo.repoNaddr ?? '';
-  const queries: Promise<NostrEvent[]>[] = [];
-
-  if (coordinate.includes(':')) {
-    queries.push(
-      queryEvents(bridge, relays, {kinds: [APP_KIND], '#a': [coordinate]}).catch(() => [])
-    );
-  }
-  if (authors.length > 0) {
-    queries.push(
-      queryEvents(bridge, relays, {kinds: [APP_KIND], authors}).catch(() => [])
-    );
-  }
-  if (queries.length === 0) return [];
-
-  const results = (await Promise.all(queries)).flat();
-
-  // Dedupe by event id, parse, keep only apps belonging to this repo,
-  // then keep the newest event per app identifier (32267 is addressable).
-  const seen = new Set<string>();
-  const byAppId = new Map<string, SoftwareApplication>();
-  for (const event of results) {
-    if (seen.has(event.id)) continue;
-    seen.add(event.id);
-    const app = parseApplication(event);
-    if (!appMatchesRepo(app, repo)) continue;
-    const existing = byAppId.get(app.appId);
-    if (!existing || app.createdAt > existing.createdAt) {
-      byAppId.set(app.appId, app);
-    }
-  }
-
-  return [...byAppId.values()];
+  // Query by authors so a replacement removing the repo link can revoke it.
+  const results = await queryEvents(bridge, relays, { kinds: [APP_KIND], authors });
+  return replacements(results).filter(event => authorizedApplication(event, repo)).map(parseApplication);
 }
 
 // ── Release data loading ─────────────────────────────────────────────────────

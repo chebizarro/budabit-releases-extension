@@ -1,5 +1,6 @@
 <script lang="ts">
-  import type { RepoContext, WidgetBridge } from 'budabit-sdk';
+  import type { WidgetBridge } from 'budabit-sdk';
+  import type { RepoContext } from '../context.js';
   import type { PipelineArtifactData } from '../pipelines.js';
   import type { SoftwareApplication } from '../types.js';
   import { CHANNELS } from '../types.js';
@@ -114,7 +115,7 @@
       // Step 1: Create the application event if it doesn't exist
       if (!hasExistingApp) {
         publishProgress = 'Publishing application event…';
-        const repoAddr = repo.repoNaddr ?? '';
+        const repoAddr = repo.repoAddress;
         const appEvent = buildApplicationEvent({
           appId: appId.trim(),
           name: appName.trim() || appId.trim(),
@@ -125,11 +126,7 @@
       }
 
       // Step 2: Create kind 3063 assets + kind 30063 release (handled by createRelease)
-      const totalSteps = selectedArtifacts.length + 1;
-      let step = 0;
-
-      // We need to intercept progress, but createRelease is atomic.
-      // For UX, just show a single progress message.
+      // Multi-event publication is sequential, not atomic.
       publishProgress = `Publishing ${selectedArtifacts.length} asset${selectedArtifacts.length !== 1 ? 's' : ''} and release…`;
 
       // Derive commitId from selected artifacts

@@ -56,6 +56,9 @@ importers:
       marked:
         specifier: ^18.0.9
         version: 18.0.9
+      nostr-tools:
+        specifier: ^2.23.5
+        version: 2.23.5(typescript@5.9.3)
     devDependencies:
       '@sveltejs/vite-plugin-svelte':
         specifier: ^5.0.3

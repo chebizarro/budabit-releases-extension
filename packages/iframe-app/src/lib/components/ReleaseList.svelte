@@ -1,5 +1,7 @@
 <script lang="ts">
-  import type { NostrEvent, RepoContext, WidgetBridge } from 'budabit-sdk';
+  import type { NostrEvent, WidgetBridge } from 'budabit-sdk';
+  import type { RepoContext } from '../context.js';
+  import { authorizedRelease, replacements } from '../trust.js';
   import type { SoftwareApplication } from '../types.js';
   import { RELEASE_KIND } from '../types.js';
   import { parseReleaseListItem, formatDate, loadRepoApps, platformLabel } from '../releases.js';
@@ -22,7 +24,7 @@
   let error = $state<string | null>(null);
 
   const sortedReleases = $derived(
-    [...releaseEvents.values()].sort((a, b) => b.created_at - a.created_at)
+    replacements([...releaseEvents.values()].filter(event => authorizedRelease(event, repo, apps)))
   );
 
   // ── Filtering + pagination ────────────────────────────────────────────────
@@ -41,7 +43,7 @@
   }
 
   function eventPlatforms(event: NostrEvent): string[] {
-    return event.tags.filter((t) => t[0] === 'f').map((t) => t[1]).filter(Boolean);
+    return event.tags.filter((t) => t[0] === 'f').map((t) => t[1]).filter((v): v is string => !!v);
   }
 
   const availablePlatforms = $derived(
@@ -116,7 +118,6 @@
         ...cached.events.map((e) => [e.id, e] as const),
         ...releaseEvents,
       ]);
-      if (apps.length === 0 && cached.apps.length > 0) apps = cached.apps;
       loading = false;
     })();
 
@@ -133,19 +134,12 @@
         // Spread to plain arrays: `repo` is a reactive $state proxy, and proxies
         // can't be structured-cloned through postMessage.
         const maintainers = [...(repo.maintainers ?? [])];
-        const repoPubkey = repo.repoPubkey;
 
         // Build subscription filter
         let filter: Record<string, unknown>;
         if (appIds.length > 0) {
           // NIP-82 correct: filter by app identifiers
-          filter = { kinds: [RELEASE_KIND], '#i': appIds };
-        } else if (maintainers.length > 0) {
-          // Fallback: releases by maintainers
-          filter = { kinds: [RELEASE_KIND], authors: maintainers };
-        } else if (repoPubkey) {
-          // Last resort: releases by repo owner
-          filter = { kinds: [RELEASE_KIND], authors: [repoPubkey] };
+          filter = { kinds: [RELEASE_KIND], '#i': appIds, authors: maintainers };
         } else {
           loading = false;
           return;

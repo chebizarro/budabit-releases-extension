@@ -1,4 +1,5 @@
-import type { NostrEvent, RepoContext, WidgetBridge } from 'budabit-sdk';
+import type { NostrEvent, WidgetBridge } from 'budabit-sdk';
+import type { RepoContext } from './context.js';
 import type { Artifact, PipelineRun, ArtifactGroup } from './types.js';
 import { queryEvents, getRelays, tagValue } from './releases.js';
 

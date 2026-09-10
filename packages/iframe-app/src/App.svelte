@@ -2,12 +2,11 @@
   import {
     createWidgetBridge,
     type NostrEvent,
-    type RepoContext,
     type WidgetBridge,
-    type WidgetInitPayload,
   } from 'budabit-sdk';
   import { onMount } from 'svelte';
   import { watchHostTheme } from './lib/host-theme';
+  import { normalizeContext, isMaintainer as canPublish, type RepoContext } from './lib/context.js';
   import type { SoftwareApplication } from './lib/types.js';
   import ReleaseList from './lib/components/ReleaseList.svelte';
   import ReleaseDetail from './lib/components/ReleaseDetail.svelte';
@@ -15,7 +14,6 @@
 
   // ── Bridge + context ──────────────────────────────────────────────────────
   let bridge = $state<WidgetBridge | null>(null);
-  let initPayload = $state<WidgetInitPayload | null>(null);
   let repoContext = $state<RepoContext | null>(null);
   let debugLog = $state<string[]>([]);
 
@@ -31,54 +29,18 @@
   let discoveredApps = $state<SoftwareApplication[]>([]);
 
   // ── Derived helpers ───────────────────────────────────────────────────────
-  const userPubkey = $derived(initPayload?.pubkey ?? '');
-
-  const trustedMaintainers = $derived(
-    (repoContext as (RepoContext & { maintainers?: string[] }) | null)?.maintainers ?? []
-  );
-
-  const isMaintainer = $derived(
-    userPubkey.length > 0 &&
-    (trustedMaintainers.length === 0 || trustedMaintainers.includes(userPubkey))
-  );
+  const trustedMaintainers = $derived(repoContext?.maintainers ?? []);
+  const isMaintainer = $derived(repoContext !== null && canPublish(repoContext));
 
   // ── Bridge lifecycle ──────────────────────────────────────────────────────
 
-  /**
-   * Normalize context from any host shape into our flat RepoContext.
-   * The host sends different field names depending on the message:
-   *   - context:repoUpdate → { repoPubkey, repoName, repoNaddr, repoRelays, maintainers }
-   *   - context:getRepo    → { pubkey, name, naddr, relays, address }
-   *   - context:update     → legacy { repo, userPubkey, relays } fallback (v1 only)
-   */
-  function normalizeRepoContext(input: unknown): RepoContext | null {
-    if (!input || typeof input !== 'object') return null;
-    const value = input as Record<string, unknown>;
-    const stringArray = (candidate: unknown): string[] =>
-      Array.isArray(candidate) ? candidate.filter((item): item is string => typeof item === 'string') : [];
-
-    // Already normalized by a current client or compatible host.
-    if (typeof value.repoPubkey === 'string' || typeof value.repoNaddr === 'string') {
-      return {
-        repoPubkey: typeof value.repoPubkey === 'string' ? value.repoPubkey : '',
-        repoName: typeof value.repoName === 'string' ? value.repoName : '',
-        repoNaddr: typeof value.repoNaddr === 'string' ? value.repoNaddr : '',
-        repoRelays: stringArray(value.repoRelays),
-        maintainers: stringArray(value.maintainers),
-      };
-    }
-
-    // Runtime host shape (pubkey, name, naddr, relays).
-    if (typeof value.pubkey === 'string' && typeof value.name === 'string') {
-      return {
-        repoPubkey: value.pubkey,
-        repoName: value.name,
-        repoNaddr: typeof value.naddr === 'string' ? value.naddr : '',
-        repoRelays: stringArray(value.relays),
-        maintainers: stringArray(value.maintainers),
-      };
-    }
-    return null;
+  function receiveContext(input: unknown) {
+    const next = normalizeContext(input, repoContext?.userPubkey);
+    if (JSON.stringify(next) === JSON.stringify(repoContext)) return;
+    repoContext = next;
+    view = 'list';
+    selectedEvent = null;
+    discoveredApps = [];
   }
 
   onMount(() => {
@@ -97,34 +59,19 @@
     // widget:init — sent first by the host; may carry repoContext inline.
     const offInit = b.onEvent('widget:init', (payload) => {
       dbg(`widget:init received: ${JSON.stringify(payload).slice(0, 200)}`);
-      initPayload = payload as WidgetInitPayload;
-      const initialRepo = payload.repoContext ?? payload.repo;
-      if (initialRepo) {
-        const ctx = normalizeRepoContext(initialRepo);
-        if (ctx) {
-          repoContext = ctx;
-          dbg('widget:init set repoContext');
-        }
-      }
+      if ('repoContext' in payload || 'repo' in payload) receiveContext(payload);
     });
 
     // context:repoUpdate — flat RepoContext pushed whenever repo data changes.
     const offRepo = b.onEvent('context:repoUpdate', (ctx) => {
       dbg(`context:repoUpdate received: ${JSON.stringify(ctx).slice(0, 200)}`);
-      repoContext = normalizeRepoContext(ctx) ?? repoContext;
+      receiveContext(ctx);
     });
 
-    // Legacy v1 fallback only. context:update is deprecated and will be removed in host v2.
+    // Current Budabit repo-tab surface still sends this compatibility envelope.
     const offContextUpdate = b.onEvent('context:update', (ctx) => {
       dbg(`legacy context:update received: ${JSON.stringify(ctx).slice(0, 200)}`);
-      if (!ctx) return;
-      if (ctx.userPubkey && !initPayload) {
-        initPayload = { pubkey: ctx.userPubkey, relays: ctx.relays ?? [], hostVersion: '1.0.0' };
-      }
-      if (!repoContext) {
-        const normalized = normalizeRepoContext(ctx.repo ?? ctx);
-        if (normalized) repoContext = normalized;
-      }
+      receiveContext(ctx);
     });
 
     // Actively fetch context if widget:init arrived before our listeners were
@@ -136,9 +83,7 @@
       b.request('context:getRepo', {})
         .then((response) => {
           if (repoContext || !response || typeof response !== 'object') return;
-          const compat = response as { repo?: unknown; repoContext?: unknown };
-          const fallbackRepo = compat.repo ?? compat.repoContext;
-          const ctx = normalizeRepoContext(fallbackRepo);
+          const ctx = normalizeContext(response);
           if (ctx) {
             repoContext = ctx;
             dbg('context:getRepo fallback set repoContext');
