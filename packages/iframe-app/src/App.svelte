@@ -6,7 +6,7 @@
   } from 'budabit-sdk';
   import { onMount } from 'svelte';
   import { watchHostTheme } from './lib/host-theme';
-  import { normalizeContext, isMaintainer as canPublish, type RepoContext } from './lib/context.js';
+  import { record, normalizeContext, isMaintainer as canPublish, type RepoContext } from './lib/context.js';
   import type { SoftwareApplication } from './lib/types.js';
   import ReleaseList from './lib/components/ReleaseList.svelte';
   import ReleaseDetail from './lib/components/ReleaseDetail.svelte';
@@ -15,12 +15,8 @@
   // ── Bridge + context ──────────────────────────────────────────────────────
   let bridge = $state<WidgetBridge | null>(null);
   let repoContext = $state<RepoContext | null>(null);
-  let debugLog = $state<string[]>([]);
-
-  function dbg(msg: string) {
-    console.log(`[releases] ${msg}`);
-    debugLog = [...debugLog, `${new Date().toISOString().slice(11,23)} ${msg}`];
-  }
+  let contextError = $state('');
+  let contextRevision = 0;
 
   // ── View routing ──────────────────────────────────────────────────────────
   type View = 'list' | 'detail' | 'create';
@@ -34,6 +30,7 @@
   // ── Bridge lifecycle ──────────────────────────────────────────────────────
 
   function receiveContext(input: unknown) {
+    contextRevision++;
     const next = normalizeContext(input, repoContext?.userPubkey);
     if (JSON.stringify(next) === JSON.stringify(repoContext)) return;
     repoContext = next;
@@ -50,26 +47,24 @@
     });
 
     bridge = b;
-    dbg('bridge created, setting up event handlers…');
+    let disposed = false;
 
     // Match the host application's theme (light/dark + background)
     const offTheme = watchHostTheme(b);
 
     // widget:init — sent first by the host; may carry repoContext inline.
     const offInit = b.onEvent('widget:init', (payload) => {
-      dbg(`widget:init received: ${JSON.stringify(payload).slice(0, 200)}`);
-      if ('repoContext' in payload || 'repo' in payload) receiveContext(payload);
+      const value = record(payload);
+      if ('repoContext' in value || 'repo' in value) receiveContext(payload);
     });
 
     // context:repoUpdate — flat RepoContext pushed whenever repo data changes.
     const offRepo = b.onEvent('context:repoUpdate', (ctx) => {
-      dbg(`context:repoUpdate received: ${JSON.stringify(ctx).slice(0, 200)}`);
       receiveContext(ctx);
     });
 
     // Current Budabit repo-tab surface still sends this compatibility envelope.
     const offContextUpdate = b.onEvent('context:update', (ctx) => {
-      dbg(`legacy context:update received: ${JSON.stringify(ctx).slice(0, 200)}`);
       receiveContext(ctx);
     });
 
@@ -77,28 +72,22 @@
     // ready (the host sends it right after the iframe `load` event, which can
     // fire before this component mounts).
     const fallbackTimer = setTimeout(() => {
-      if (repoContext) return;
-      dbg('no context after 500ms — requesting context:getRepo');
+      const revision = contextRevision;
       b.request('context:getRepo', {})
         .then((response) => {
-          if (repoContext || !response || typeof response !== 'object') return;
-          const ctx = normalizeContext(response);
-          if (ctx) {
-            repoContext = ctx;
-            dbg('context:getRepo fallback set repoContext');
-          } else {
-            dbg(`context:getRepo returned no usable context: ${JSON.stringify(response).slice(0, 200)}`);
-          }
+          if (disposed || revision !== contextRevision) return;
+          if (record(response).error) throw new Error(String(record(response).error));
+          receiveContext(response);
         })
         .catch((err) => {
-          dbg(`context:getRepo fallback failed: ${err?.message ?? err}`);
+          if (!disposed) contextError = err instanceof Error ? err.message : String(err);
         });
     }, 500);
 
-    dbg('signalReady() called');
     b.signalReady();
 
     return () => {
+      disposed = true;
       clearTimeout(fallbackTimer);
       offTheme();
       offInit();
@@ -137,10 +126,8 @@
   {:else if !repoContext}
     <div class="no-context">
       <p>Waiting for repository context…</p>
-      <p class="hint">This extension works inside a Flotilla git repository tab.</p>
-      {#if debugLog.length > 0}
-        <pre class="debug-log">{debugLog.join('\n')}</pre>
-      {/if}
+      <p class="hint">Open this widget inside a Budabit repository tab.</p>
+      {#if contextError}<pre class="debug-log" role="alert">{contextError}</pre>{/if}
     </div>
   {:else if view === 'detail' && selectedEvent}
     <ReleaseDetail

@@ -111,6 +111,8 @@ export interface SoftwareRelease {
   releaseNotes: string; // content (markdown)
   assetEventIds: string[]; // e tag ids (order preserved)
   assets: SoftwareAsset[];
+  unresolvedAssetIds: string[];
+  complete: boolean;
   createdAt: number;
 }
 
@@ -160,23 +162,4 @@ export interface PipelineRun {
   createdAt: number;
   ephemeralPubkey: string; // publisher tag
   triggeredBy: string; // triggered-by tag
-}
-
-// ── Artifact grouping (consensus across workers) ─────────────────────────────
-
-export interface ArtifactGroup {
-  filename: string;
-  sha256Counts: Map<string, Artifact[]>; // sha256 → artifacts with that hash
-  consensusHash: string | null;
-  isUnanimous: boolean;
-}
-
-export type ConsensusStatus = 'unanimous' | 'majority' | 'split';
-
-export function getConsensusStatus(group: ArtifactGroup): ConsensusStatus {
-  if (group.isUnanimous) return 'unanimous';
-  if (!group.consensusHash) return 'split';
-  const top = group.sha256Counts.get(group.consensusHash)?.length ?? 0;
-  const total = [...group.sha256Counts.values()].reduce((s, a) => s + a.length, 0);
-  return top / total > 0.5 ? 'majority' : 'split';
 }

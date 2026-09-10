@@ -16,7 +16,7 @@ describe('budabit-sdk consumer integration', () => {
     );
     const request = bridge.sentMessages[0];
     if (!request || request.type !== 'request') throw new Error('Expected a query request');
-    bridge.respondTo(request.id, { status: 'ok', events: [event] });
+    bridge.respondTo(request.id, { status: 'ok', complete: true, events: [event] });
 
     await expect(pending).resolves.toEqual([event]);
     expect(tagValue(event, 'version')).toBe('1.0.0');

@@ -10,7 +10,7 @@ const artifact = (refs: string[] = []) => signed({ kind: 1063, tags: [
   ['url', 'https://files.example/app'], ['x', 'b'.repeat(64)], ['filename', 'app'], ['m', 'application/octet-stream'],
   ...refs.map(id => ['e', id]),
 ] }, 3);
-const bridge = (runs: NostrEvent[], assets: NostrEvent[]) => ({ request: async (_: string, p: { filter: { kinds: number[] } }) => ({ status: 'ok', events: p.filter.kinds[0] === 5401 ? runs : assets }) }) as unknown as WidgetBridge;
+const bridge = (runs: NostrEvent[], assets: NostrEvent[]) => ({ request: async (_: string, p: { filter: { kinds: number[] } }) => ({ status: 'ok', complete: true, events: p.filter.kinds[0] === 5401 ? runs : assets }) }) as unknown as WidgetBridge;
 
 describe('authenticated pipeline artifacts', () => {
   it('rejects spoofed triggered-by, even with valid attacker signatures', async () => {

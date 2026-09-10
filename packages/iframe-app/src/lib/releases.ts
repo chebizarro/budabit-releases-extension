@@ -3,6 +3,7 @@ import { normalizeRelays, type RepoContext } from './context.js';
 import { authorizedApplication, replacements, verifiedEvent } from './trust.js';
 import { HEX_KEY } from './context.js';
 import { safeAssetUrl } from './binary.js';
+import { queryAll } from './query.js';
 import type {
   SoftwareRelease,
   SoftwareAsset,
@@ -31,73 +32,14 @@ export function getRelays(repoRelays: string[] | undefined): string[] {
   return normalizeRelays(merged).slice(0, MAX_QUERY_RELAYS);
 }
 
-// ── Release list cache (stale-while-revalidate) ─────────────────────────────
-
-const LIST_CACHE_KEY = 'releases-list-cache-v1';
-const LIST_CACHE_MAX_EVENTS = 50;
-
-export interface CachedReleaseState {
-  apps: SoftwareApplication[];
-  events: NostrEvent[];
-}
-
-/**
- * Read the cached release list from host storage (repo-scoped).
- * Returns null when there is no cache, or when the widget lacks
- * storage permissions — callers just fall through to a live load.
- */
-export async function loadCachedReleaseState(
-  bridge: WidgetBridge
-): Promise<CachedReleaseState | null> {
-  try {
-    const response = (await bridge.request('storage:get' as never, {
-      key: LIST_CACHE_KEY,
-      repoScoped: true,
-    } as never)) as { data?: { apps?: unknown; events?: unknown } } | null;
-    const data = response?.data;
-    if (!data || !Array.isArray(data.events)) return null;
-    return {
-      apps: Array.isArray(data.apps) ? (data.apps as SoftwareApplication[]) : [],
-      events: data.events as NostrEvent[],
-    };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Persist the release list to host storage (repo-scoped, best effort).
- * JSON round-trip strips Svelte reactive proxies so the payload is
- * structured-cloneable, and trimming keeps us under the host's 1MB cap.
- */
-export async function saveCachedReleaseState(
-  bridge: WidgetBridge,
-  apps: SoftwareApplication[],
-  events: NostrEvent[]
-): Promise<void> {
-  try {
-    const trimmed = [...events]
-      .sort((a, b) => b.created_at - a.created_at)
-      .slice(0, LIST_CACHE_MAX_EVENTS);
-    const data = JSON.parse(JSON.stringify({ apps, events: trimmed, ts: Date.now() }));
-    await bridge.request('storage:set' as never, {
-      key: LIST_CACHE_KEY,
-      repoScoped: true,
-      data,
-    } as never);
-  } catch {
-    // Best effort — cache misses are always recoverable via live load.
-  }
-}
-
 export async function queryEvents(
   bridge: WidgetBridge,
   relays: string[],
   filter: Record<string, unknown>
 ): Promise<NostrEvent[]> {
-  const response = await bridge.request('nostr:query', { relays, filter });
-  if ('error' in response) throw new Error(response.error);
-  return (response.events ?? []).map(verifiedEvent).filter((e): e is NostrEvent => e !== null);
+  const response = await queryAll(bridge, relays, filter);
+  if (!response.complete) throw new Error(response.errors?.join('; ') || 'Discovery is incomplete (relay timeout, pagination bound, or older host). Retry before publishing.');
+  return response.events;
 }
 
 export function tagValue(event: NostrEvent, tagName: string): string | undefined {
@@ -115,7 +57,7 @@ export function tagValues(event: NostrEvent, tagName: string): string[] {
 
 /**
  * Derive a display filename from a kind 3063 asset event.
- * Prefers: url basename → variant + MIME extension → sha256 truncation.
+ * Prefers: explicit filename → url basename → variant → sha256 truncation.
  */
 function deriveFilename(event: NostrEvent): string {
   const filename = tagValue(event, 'filename');
@@ -139,7 +81,9 @@ function deriveFilename(event: NostrEvent): string {
 export function parseAsset(event: NostrEvent): SoftwareAsset | null {
   const sha256 = tagValue(event, 'x');
   const mimeType = tagValue(event, 'm');
-  if (!sha256 || !mimeType) return null;
+  if (event.kind !== ASSET_KIND || !verifiedEvent(event) || !sha256 || !HEX_KEY.test(sha256) || !mimeType ||
+      !tagValue(event, 'i') || !tagValue(event, 'version') ||
+      (tagValue(event, 'url') && !safeAssetUrl(tagValue(event, 'url')))) return null;
 
   const sizeStr = tagValue(event, 'size');
   const vcStr = tagValue(event, 'version_code');
@@ -151,7 +95,7 @@ export function parseAsset(event: NostrEvent): SoftwareAsset | null {
     url: tagValue(event, 'url'),
     mimeType,
     sha256,
-    size: sizeStr ? parseInt(sizeStr, 10) || undefined : undefined,
+    size: sizeStr !== undefined && /^\d+$/.test(sizeStr) && Number.isSafeInteger(Number(sizeStr)) ? Number(sizeStr) : undefined,
     version: tagValue(event, 'version') ?? '',
     platforms: tagValues(event, 'f'),
     minPlatformVersion: tagValue(event, 'min_platform_version'),
@@ -159,7 +103,7 @@ export function parseAsset(event: NostrEvent): SoftwareAsset | null {
     variant: tagValue(event, 'variant'),
     commitId: tagValue(event, 'commit'),
     minAllowedVersion: tagValue(event, 'min_allowed_version'),
-    versionCode: vcStr ? parseInt(vcStr, 10) || undefined : undefined,
+    versionCode: vcStr !== undefined && /^\d+$/.test(vcStr) && Number.isSafeInteger(Number(vcStr)) ? Number(vcStr) : undefined,
     apkCertificateHashes: tagValues(event, 'apk_certificate_hash'),
     filename: deriveFilename(event),
   };
@@ -200,9 +144,7 @@ export function parseApplication(event: NostrEvent): SoftwareApplication {
 // ── Application discovery ────────────────────────────────────────────────────
 
 /**
- * Does a 32267 application belong to this repo?
- * Zapstore-style apps link via a `repository` URL tag (github.com/owner/name);
- * NIP-82-style apps link via an `a` tag with the 30617 coordinate.
+ * Exact repository identity only; display names and URL basenames are not authority.
  */
 export function appMatchesRepo(app: SoftwareApplication, repo: RepoContext): boolean {
   return app.repoAddress === repo.repoAddress && repo.maintainers.includes(app.pubkey);
@@ -210,10 +152,7 @@ export function appMatchesRepo(app: SoftwareApplication, repo: RepoContext): boo
 
 /**
  * Find kind 32267 Software Application events that belong to this repo.
- * Two lookups run in parallel:
- *  - by `#a` coordinate (NIP-82 linkage), when the address is coordinate-form
- *  - by authors (repo owner + maintainers) — zapstore publishes apps signed by
- *    the developer's own key, linked to the repo only via a `repository` URL
+ * Query publisher namespaces before filtering links so newer revisions can revoke a link.
  */
 export async function loadRepoApps(
   bridge: WidgetBridge,
@@ -240,7 +179,10 @@ export async function loadReleaseDetail(
   repo: RepoContext,
   releaseEvent: NostrEvent
 ): Promise<SoftwareRelease> {
-  const relays = getRelays(repo.repoRelays);
+  if (!verifiedEvent(releaseEvent) || !repo.maintainers.includes(releaseEvent.pubkey)) throw new Error('Release is not signed by a current maintainer');
+  const relays = normalizeRelays([
+    ...releaseEvent.tags.filter(t => t[0] === 'e').map(t => t[2]), ...getRelays(repo.repoRelays),
+  ]).slice(0, 8);
   const appId = tagValue(releaseEvent, 'i') ?? '';
   const version =
     tagValue(releaseEvent, 'version') ??
@@ -248,18 +190,20 @@ export async function loadReleaseDetail(
     'unknown';
   const dTag = tagValue(releaseEvent, 'd') ?? `${appId}@${version}`;
   const channel = tagValue(releaseEvent, 'c') ?? 'main';
-  const assetEventIds = releaseEvent.tags
+  const assetEventIds = [...new Set(releaseEvent.tags
     .filter((tag) => tag[0] === 'e')
     .map((tag) => tag[1])
-    .filter((id): id is string => Boolean(id));
+    .filter((id): id is string => Boolean(id)))];
 
   let assets: SoftwareAsset[] = [];
+  let complete = true;
   if (assetEventIds.length > 0) {
-    const events = await queryEvents(bridge, relays, {
+    const result = await queryAll(bridge, relays, {
       kinds: [ASSET_KIND],
       ids: assetEventIds,
     });
-    assets = events.map(parseAsset).filter((a): a is SoftwareAsset => a !== null);
+    complete = result.complete;
+    assets = result.events.map(parseAsset).filter((a): a is SoftwareAsset => a !== null);
     // Preserve declaration order from the release event
     const byId = new Map(assets.map((a) => [a.eventId, a]));
     assets = assetEventIds.map((id) => byId.get(id)).filter((a): a is SoftwareAsset => !!a);
@@ -275,6 +219,8 @@ export async function loadReleaseDetail(
     releaseNotes: releaseEvent.content,
     assetEventIds,
     assets,
+    unresolvedAssetIds: assetEventIds.filter(id => !assets.some(a => a.eventId === id)),
+    complete,
     createdAt: releaseEvent.created_at,
   };
 }

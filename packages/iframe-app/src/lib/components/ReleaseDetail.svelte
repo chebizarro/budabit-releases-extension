@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { marked } from 'marked';
-  import DOMPurify from 'dompurify';
+  import { releaseNotesHtml } from '../markdown.js';
+  import { verifyBinary } from '../binary.js';
+  import type { SoftwareAsset } from '../types.js';
   import type { NostrEvent, WidgetBridge } from 'budabit-sdk';
   import type { RepoContext } from '../context.js';
   import type { SoftwareRelease } from '../types.js';
@@ -26,28 +27,30 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
 
-  // Open every rendered link in a new tab — in-place navigation would replace
-  // the widget iframe itself.
-  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
-    if (node.tagName === 'A') {
-      node.setAttribute('target', '_blank');
-      node.setAttribute('rel', 'noopener noreferrer');
-    }
-  });
+  let verification = $state<Record<string, string>>({});
+  let retry = $state(0);
+  async function checkFile(asset: SoftwareAsset, file?: File) {
+    if (!file) return;
+    verification[asset.eventId] = 'Checking…';
+    try { await verifyBinary(file, asset.sha256, asset.size); verification[asset.eventId] = 'SHA-256 matches signed metadata'; }
+    catch (err) { verification[asset.eventId] = err instanceof Error ? err.message : String(err); }
+  }
 
   /** Release notes are untrusted event content: parse as markdown, sanitize the HTML. */
   const notesHtml = $derived.by(() => {
     const notes = release?.releaseNotes;
     if (!notes) return '';
     try {
-      return DOMPurify.sanitize(marked.parse(notes, { async: false, gfm: true }) as string);
+      return releaseNotesHtml(notes);
     } catch {
       return '';
     }
   });
 
   $effect(() => {
+    void retry;
     if (!bridge || !releaseEvent) return;
+    let disposed = false;
 
     loading = true;
     error = null;
@@ -55,13 +58,16 @@
 
     loadReleaseDetail(bridge, repo, releaseEvent)
       .then((r) => {
+        if (disposed) return;
         release = r;
         loading = false;
       })
       .catch((err) => {
+        if (disposed) return;
         error = err instanceof Error ? err.message : String(err);
         loading = false;
       });
+    return () => { disposed = true; };
   });
 </script>
 
@@ -84,6 +90,8 @@
     <div class="release-content">
       <div class="release-headline">
         <h2>{release.version}</h2>
+        <p style="overflow-wrap: anywhere">Verified metadata publisher: <code>{release.pubkey}</code></p>
+        <p>Signature verification does not check downloaded bytes or native/APK signatures. Verify a local copy below before use.</p>
         <div class="release-meta">
           <span>{formatDate(release.createdAt)}</span>
           {#if release.appId}
@@ -109,9 +117,13 @@
       {/if}
 
       <section class="artifacts-section">
-        <h3>Assets ({release.assets.length})</h3>
+        <h3>Assets ({release.assets.length} resolved / {release.assetEventIds.length} referenced)</h3>
+        {#if release.unresolvedAssetIds.length || !release.complete}
+          <p role="alert">Some asset metadata could not be resolved or relay results were incomplete. <button onclick={() => retry++}>Retry assets</button></p>
+          {#each release.unresolvedAssetIds as id}<p style="overflow-wrap: anywhere"><code>{id}</code> — unresolved</p>{/each}
+        {/if}
         {#if release.assets.length === 0}
-          <p class="no-artifacts">No assets attached to this release.</p>
+          <p class="no-artifacts">No verified asset metadata is currently available.</p>
         {:else}
           <div class="table-wrap">
             <table class="artifact-table">
@@ -147,6 +159,8 @@
                       <a class="btn-download" href={assetDownloadUrl(asset)} target="_blank" rel="noreferrer">
                         Download
                       </a>
+                      <label>Verify local file <input type="file" onchange={(e) => void checkFile(asset, e.currentTarget.files?.[0])} /></label>
+                      <span role="status">{verification[asset.eventId] ?? ''}</span>
                     </td>
                   </tr>
                   {#if asset.commitId || asset.minPlatformVersion || asset.versionCode != null}

@@ -38,8 +38,13 @@
   $effect(() => {
     let disposed = false;
     loading = true;
-    Promise.all([loadPipelineArtifacts(bridge, repo), loadJournal(bridge, repo)])
-      .then(([data, saved]) => { if (!disposed) { pipelineData = data; journal = saved; loading = false; } })
+    loadJournal(bridge, repo)
+      .then(async saved => {
+        if (disposed) return;
+        journal = saved;
+        if (!saved) pipelineData = await loadPipelineArtifacts(bridge, repo);
+        if (!disposed) loading = false;
+      })
       .catch((err: unknown) => { if (!disposed) { error = err instanceof Error ? err.message : String(err); loading = false; } });
     return () => { disposed = true; };
   });

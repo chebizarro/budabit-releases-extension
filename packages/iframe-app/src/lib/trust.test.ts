@@ -33,7 +33,7 @@ describe('release authority', () => {
   });
   it('discovery preserves publisher namespaces and propagates errors', async () => {
     const repo = { ...testRepo(), maintainers: [testPubkey(), testPubkey(2)] };
-    const bridge = { request: async () => ({ status: 'ok', events: [signed(), signed({}, 2)] }) } as unknown as WidgetBridge;
+    const bridge = { request: async () => ({ status: 'ok', complete: true, events: [signed(), signed({}, 2)] }) } as unknown as WidgetBridge;
     expect(await loadRepoApps(bridge, repo)).toHaveLength(2);
     const failed = { request: async () => ({ error: 'offline' }) } as unknown as WidgetBridge;
     await expect(loadRepoApps(failed, repo)).rejects.toThrow('offline');
