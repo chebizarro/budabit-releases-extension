@@ -40,6 +40,51 @@ const bridge = (runs: NostrEvent[], assets: NostrEvent[]) =>
   }) as unknown as WidgetBridge;
 
 describe('authenticated pipeline artifacts', () => {
+  it('checks delegation reuse across repositories before assigning legacy artifacts or commits', async () => {
+    const current = run();
+    const other = signed({
+      ...current,
+      tags: current.tags.map((t) =>
+        t[0] === 'a'
+          ? ['a', `30617:${testPubkey()}:other-repo`]
+          : t[0] === 'commit'
+            ? ['commit', 'c'.repeat(40)]
+            : t
+      ),
+    });
+    const legacy = signed(
+      {
+        ...artifact(),
+        tags: artifact().tags.map((t) =>
+          t[0] === 'filename' ? ['filename', 'other-repo.bin'] : t
+        ),
+      },
+      3
+    );
+    const data = await loadPipelineArtifacts(bridge([current, other], [legacy]), testRepo());
+    expect(data.runs).toEqual([]);
+    expect(data.artifactsByRun.size).toBe(0);
+  });
+  it('accepts legacy metadata only after complete cross-repository delegation discovery', async () => {
+    const current = run();
+    const other = signed({
+      ...current,
+      tags: current.tags.map((t) =>
+        t[0] === 'a'
+          ? ['a', `30617:${testPubkey()}:other-repo`]
+          : t[0] === 'publisher'
+            ? ['publisher', testPubkey(4)]
+            : t
+      ),
+    });
+    const data = await loadPipelineArtifacts(bridge([current, other], [artifact()]), testRepo());
+    expect(data.runs.map((r) => r.id)).toEqual([current.id]);
+    expect(data.artifactsByRun.get(current.id)?.[0]?.commitId).toBe('a'.repeat(40));
+    const partial = {
+      request: async () => ({ status: 'ok', complete: false, events: [current] }),
+    } as unknown as WidgetBridge;
+    await expect(loadPipelineArtifacts(partial, testRepo())).rejects.toThrow('incomplete');
+  });
   it('rejects spoofed triggered-by, even with valid attacker signatures', async () => {
     expect(
       (await loadPipelineArtifacts(bridge([run(2)], [artifact()]), testRepo())).runs

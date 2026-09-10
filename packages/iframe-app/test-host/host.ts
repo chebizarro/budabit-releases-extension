@@ -25,7 +25,7 @@ const asset = signed({
 const release = releaseFixture({
   created_at: now,
   content:
-    '# Verified release\n\n[Release guide](https://files.example.invalid/guide)\n\n<img src="https://tracker.example.invalid/image" onerror="alert(1)"><script>alert(1)</script>',
+    '# Verified release\n\n[Release guide](https://files.example.invalid/guide)\n\n<img src="https://tracker.example.invalid/image" onerror="alert(1)"><script>alert(1)</script><video poster="https://tracker.example.invalid/pixel"></video><audio src="https://tracker.example.invalid/sound" preload="auto"></audio><picture><source srcset="https://tracker.example.invalid/source"></picture><svg><image href="https://tracker.example.invalid/svg" /></svg><iframe src="https://tracker.example.invalid/frame"></iframe><object data="https://tracker.example.invalid/object"></object><link rel="stylesheet" href="https://tracker.example.invalid/style"><style>p { background: url(https://tracker.example.invalid/background) }</style>',
   tags: [
     ...releaseFixture().tags.filter((t) => t[0] !== 'e'),
     ['e', asset.id],

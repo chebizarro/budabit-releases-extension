@@ -74,13 +74,36 @@ test('shows only authorized releases, reconciles replacements and account/contex
 
 test('sanitizes notes and allows a user-activated popup without navigating the widget', async ({
   page,
+  context,
 }) => {
   const widget = page.frameLocator('iframe');
+  const unsolicited: string[] = [];
+  const observe = (request: { url(): string }) => {
+    if (request.url().startsWith('https://')) unsolicited.push(request.url());
+  };
+  context.on('request', observe);
   await widget.locator('.release-card').click();
   await expect(
     widget.getByRole('heading', { name: 'Assets (1 resolved / 1 referenced)' })
   ).toBeVisible();
-  await expect(widget.locator('.release-notes img, .release-notes script')).toHaveCount(0);
+  // Wait through layout/render and a message task so resource selection has run.
+  await widget
+    .locator('.release-notes')
+    .evaluate(
+      () => new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)))
+    );
+  expect(unsolicited).toEqual([]);
+  await expect(
+    widget.locator(
+      '.release-notes img, .release-notes script, .release-notes video, .release-notes audio, .release-notes iframe, .release-notes object, .release-notes link, .release-notes svg'
+    )
+  ).toHaveCount(0);
+  context.off('request', observe);
+  const guidePopup = page.waitForEvent('popup');
+  await widget.getByRole('link', { name: 'Release guide', exact: true }).click();
+  const guide = await guidePopup;
+  await expect(guide).toHaveURL('https://files.example.invalid/guide');
+  await guide.close();
   const popup = page.waitForEvent('popup');
   await widget.getByRole('link', { name: 'Download', exact: true }).click();
   const opened = await popup;
@@ -234,13 +257,11 @@ test('stops same-session resume after app revocation and exposes recovery when r
   await widget
     .getByRole('combobox', { name: 'Authenticated pipeline run', exact: true })
     .selectOption({ index: 1 });
-  await widget
-    .getByLabel('Verify local file')
-    .setInputFiles({
-      name: 'fixture.bin',
-      mimeType: 'application/octet-stream',
-      buffer: Buffer.from('test'),
-    });
+  await widget.getByLabel('Verify local file').setInputFiles({
+    name: 'fixture.bin',
+    mimeType: 'application/octet-stream',
+    buffer: Buffer.from('test'),
+  });
   await widget.getByRole('checkbox', { name: 'Include fixture.bin' }).check();
   await widget.getByRole('button', { name: 'Publish Release', exact: true }).click();
   await expect(widget.getByRole('alert')).toContainText('Synthetic relay timeout');

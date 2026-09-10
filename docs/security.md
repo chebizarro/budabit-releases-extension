@@ -13,9 +13,9 @@ Legacy unlinked releases are excluded. Older cached events are reverified and re
 
 ## Pipeline provenance
 
-Run `event.pubkey` must be a current maintainer and equal the `triggered-by` tag. The run must name the exact repository and a valid commit. Only its authenticated `publisher` delegation authorizes artifact metadata. Reused publisher keys across discovered runs are rejected as ambiguous. If an artifact supplies run/commit references, they must agree with that run.
+Run `event.pubkey` must be a current maintainer and equal the `triggered-by` tag. The run must name exactly one repository coordinate (the current repository) and a valid commit. Only its authenticated `publisher` delegation authorizes artifact metadata. Discovery scans current maintainers' kind-5401 events across **all repository scopes** before selecting current-repository runs. Reused publisher keys across discovered delegations are rejected as ambiguous, even when the other run belongs to another repository. If an artifact supplies run/commit references, they must agree with that run.
 
-Legacy artifacts without an `e` tag rely on the run-specific ephemeral publisher delegation. This is not independent-worker consensus. The widget does not verify worker identity, workflow execution, Git object existence, reproducibility or the safety of uploaded outputs. Selection is explicitly run-specific, never a historical filename majority.
+Legacy artifacts without an `e` tag rely on a unique run-specific ephemeral publisher delegation in that completed maintainer-namespace discovery. Partial discovery fails closed (including for explicitly linked artifacts); never infer a commit from an ambiguous delegation. This is not global proof of key uniqueness: relays may hide history, and delegations from authors outside the current maintainer set are not discovered. This is not independent-worker consensus. The widget does not verify worker identity, workflow execution, Git object existence, reproducibility or the safety of uploaded outputs. Selection is explicitly run-specific, never a historical filename majority.
 
 ## Binary and native signatures
 
@@ -31,7 +31,7 @@ A signer prompt already open in the host cannot be canceled by a widget timeout.
 
 ## Untrusted rendering and embedding
 
-Markdown is parsed then sanitized; scripts, forms, styles, executable links and tracking images are removed. Asset and notes links permit HTTPS without URL credentials and use a new browsing context. Browser popup/download restrictions still apply.
+Markdown is parsed then sanitized with a passive element/attribute allowlist. Headings, lists, tables, code and emphasis remain; media, images, embeds, SVG, styles and automatic resource-loading attributes do not. Notes never intentionally load third-party resources on rendering; a browser network regression covers hostile media notes. Asset and notes links permit HTTPS without URL credentials and use a new browsing context only on user activation. Browser popup/download restrictions still apply.
 
 Deploy the widget on a **different origin** from Budabit. Combining `allow-scripts` and `allow-same-origin` does not isolate a same-origin iframe from its parent. The host validates both source window and exact runtime origin and denies undeclared privileged actions. Installing a widget is a trust decision about code, separate from trusting release publishers.
 

@@ -81,4 +81,19 @@ describe('release detail', () => {
     expect(root.querySelector('a')?.getAttribute('rel')).toBe('noopener noreferrer');
     expect(root.querySelector('img, script, [onerror], [href^="javascript:"]')).toBeNull();
   });
+  it('allows only passive Markdown, never media, embeds, styles or resource attributes', () => {
+    const html = releaseNotesHtml(
+      `## Passive notes\n\n**Bold** and *emphasis*\n\n- item\n\n\`code\`\n\n| Key | Value |\n| --- | --- |\n| A | B |\n\n<video poster="https://tracker.example/pixel"></video><audio src="https://tracker.example/sound" preload="auto"></audio><picture><source srcset="https://tracker.example/source"><img src="https://tracker.example/img"></picture><svg><image href="https://tracker.example/svg"/></svg><iframe src="https://tracker.example/frame"></iframe><object data="https://tracker.example/object"></object><link rel="stylesheet" href="https://tracker.example/style"><style>p{background:url(https://tracker.example/bg)}</style><p style="background:url(https://tracker.example/bg)" background="https://tracker.example/bg">Safe</p><a href="https://files.example/guide" ping="https://tracker.example/ping" style="color:red">Guide</a>`
+    );
+    const root = document.createElement('div');
+    root.innerHTML = html;
+    expect(
+      root.querySelector(
+        'video,audio,source,picture,img,svg,iframe,object,embed,link,style,[src],[srcset],[poster],[style],[background],[ping]'
+      )
+    ).toBeNull();
+    for (const tag of ['h2', 'strong', 'em', 'ul', 'li', 'code', 'table', 'th', 'td'])
+      expect(root.querySelector(tag)).not.toBeNull();
+    expect(root.querySelector('a')?.getAttribute('href')).toBe('https://files.example/guide');
+  });
 });
