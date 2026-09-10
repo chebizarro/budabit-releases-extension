@@ -1,6 +1,8 @@
 import type { NostrEvent, WidgetBridge } from 'budabit-sdk';
 import { normalizeRelays, type RepoContext } from './context.js';
 import { authorizedApplication, replacements, verifiedEvent } from './trust.js';
+import { HEX_KEY } from './context.js';
+import { safeAssetUrl } from './binary.js';
 import type {
   SoftwareRelease,
   SoftwareAsset,
@@ -98,33 +100,6 @@ export async function queryEvents(
   return (response.events ?? []).map(verifiedEvent).filter((e): e is NostrEvent => e !== null);
 }
 
-export async function signEvent(
-  bridge: WidgetBridge,
-  unsignedEvent: Record<string, unknown>
-): Promise<NostrEvent> {
-  const response = (await bridge.request('nostr:sign', unsignedEvent)) as
-    | { status: 'ok'; event: NostrEvent }
-    | { error: string };
-  if ('error' in response) throw new Error(response.error);
-  if (response.status === 'ok' && response.event) return response.event;
-  throw new Error('Unexpected response from nostr:sign');
-}
-
-export async function publishEvent(
-  bridge: WidgetBridge,
-  event: Record<string, unknown>,
-  relays?: string[]
-): Promise<string> {
-  const payload = relays ? { event, relays } : event;
-  const response = (await bridge.request('nostr:publish', payload)) as {
-    error?: string;
-    result?: { eventId?: string };
-    eventId?: string;
-  };
-  if (response.error) throw new Error(response.error);
-  return response.result?.eventId ?? response.eventId ?? '';
-}
-
 export function tagValue(event: NostrEvent, tagName: string): string | undefined {
   return event.tags.find((tag) => tag[0] === tagName)?.[1];
 }
@@ -143,6 +118,8 @@ export function tagValues(event: NostrEvent, tagName: string): string[] {
  * Prefers: url basename → variant + MIME extension → sha256 truncation.
  */
 function deriveFilename(event: NostrEvent): string {
+  const filename = tagValue(event, 'filename');
+  if (filename) return filename;
   const url = tagValue(event, 'url');
   if (url) {
     try {
@@ -345,20 +322,35 @@ export function buildAssetEvent(opts: {
   commitId?: string;
   variant?: string;
 }): Record<string, unknown> {
+  const artifact = opts.artifact;
+  if (!HEX_KEY.test(artifact.sha256) || !safeAssetUrl(artifact.url)) throw new Error('Asset needs a valid SHA-256 and HTTPS URL');
+  if (!artifact.mimeType.includes('/')) throw new Error('Asset needs a MIME type');
+  if (artifact.size !== undefined && (!Number.isSafeInteger(artifact.size) || artifact.size < 0)) throw new Error('Invalid asset size');
+  if (artifact.mimeType === 'application/vnd.android.package-archive' &&
+      (!Number.isSafeInteger(artifact.versionCode) || (artifact.versionCode ?? -1) < 0 ||
+       !artifact.apkCertificateHashes?.length || artifact.apkCertificateHashes.some(h => !HEX_KEY.test(h)))) {
+    throw new Error('APK requires version_code and apk_certificate_hash metadata');
+  }
   const tags: string[][] = [
-    ['i', opts.appId],
-    ['version', opts.version],
+    ['i', artifact.appId || opts.appId],
+    ['version', artifact.version || opts.version],
     ['m', opts.artifact.mimeType],
     ['x', opts.artifact.sha256],
+    ['filename', artifact.filename],
   ];
   if (opts.artifact.url) tags.push(['url', opts.artifact.url]);
   if (opts.artifact.size != null) tags.push(['size', String(opts.artifact.size)]);
-  if (opts.platforms) {
-    for (const p of opts.platforms) tags.push(['f', p]);
+  if (artifact.platforms ?? opts.platforms) {
+    for (const p of artifact.platforms ?? opts.platforms ?? []) tags.push(['f', p]);
   }
-  const commitId = opts.commitId ?? opts.artifact.commitId;
+  const commitId = opts.artifact.commitId ?? opts.commitId;
   if (commitId) tags.push(['commit', commitId]);
   if (opts.variant) tags.push(['variant', opts.variant]);
+  else if (artifact.variant) tags.push(['variant', artifact.variant]);
+  if (artifact.versionCode !== undefined) tags.push(['version_code', String(artifact.versionCode)]);
+  for (const hash of artifact.apkCertificateHashes ?? []) tags.push(['apk_certificate_hash', hash]);
+  if (artifact.minPlatformVersion) tags.push(['min_platform_version', artifact.minPlatformVersion]);
+  if (artifact.targetPlatformVersion) tags.push(['target_platform_version', artifact.targetPlatformVersion]);
 
   return {
     kind: ASSET_KIND,
@@ -373,18 +365,23 @@ export function buildAssetEvent(opts: {
  */
 export function buildReleaseEvent(opts: {
   appId: string;
+  appPubkey: string;
   version: string;
   channel: string;
   assetEventIds: string[];
   releaseNotes: string;
   relayHint?: string;
+  platforms?: string[];
 }): Record<string, unknown> {
+  if (!HEX_KEY.test(opts.appPubkey) || !opts.appId.trim() || !opts.version.trim()) throw new Error('Invalid application coordinate or version');
   const tags: string[][] = [
+    ['a', `32267:${opts.appPubkey}:${opts.appId}`, opts.relayHint ?? ''],
     ['d', `${opts.appId}@${opts.version}`],
     ['i', opts.appId],
     ['version', opts.version],
     ['c', opts.channel],
     ...opts.assetEventIds.map((id) => ['e', id, opts.relayHint ?? '']),
+    ...[...new Set(opts.platforms ?? [])].map(platform => ['f', platform]),
   ];
 
   return {
@@ -393,56 +390,6 @@ export function buildReleaseEvent(opts: {
     tags,
     created_at: Math.floor(Date.now() / 1000),
   };
-}
-
-/**
- * Full release creation flow:
- * 1. Sign + publish kind 3063 asset events for each selected artifact
- * 2. Publish kind 30063 release event referencing the asset event IDs
- *
- * Returns the published release event ID.
- */
-export async function createRelease(
-  bridge: WidgetBridge,
-  relays: string[],
-  opts: {
-    appId: string;
-    version: string;
-    channel: string;
-    releaseNotes: string;
-    artifacts: Artifact[];
-    platforms?: string[];
-    commitId?: string;
-  }
-): Promise<string> {
-  // Phase 1: Publish kind 3063 asset events
-  const assetEventIds: string[] = [];
-  for (const artifact of opts.artifacts) {
-    const unsigned = buildAssetEvent({
-      appId: opts.appId,
-      version: opts.version,
-      artifact,
-      platforms: opts.platforms,
-      commitId: opts.commitId,
-    });
-    const signed = await signEvent(bridge, unsigned);
-    const eventId = await publishEvent(bridge, { event: signed, relays });
-    assetEventIds.push(eventId || signed.id);
-  }
-
-  // Phase 2: Publish kind 30063 release event
-  const releaseUnsigned = buildReleaseEvent({
-    appId: opts.appId,
-    version: opts.version,
-    channel: opts.channel,
-    assetEventIds,
-    releaseNotes: opts.releaseNotes,
-    relayHint: relays[0],
-  });
-
-  const releaseSigned = await signEvent(bridge, releaseUnsigned);
-  const releaseId = await publishEvent(bridge, { event: releaseSigned, relays });
-  return releaseId || releaseSigned.id;
 }
 
 // ── Formatting helpers ───────────────────────────────────────────────────────
@@ -467,14 +414,15 @@ export function shortHash(hash: string): string {
 
 /** Resolve a blossom download URL for an asset (by SHA-256 if no URL tag). */
 export function assetDownloadUrl(asset: SoftwareAsset, blossomServer?: string): string {
-  if (asset.url) return asset.url;
+  if (asset.url) return safeAssetUrl(asset.url) ?? '';
+  if (!HEX_KEY.test(asset.sha256)) return '';
   const server = blossomServer ?? 'https://blossom.primal.net';
-  return `${server}/${asset.sha256}`;
+  return safeAssetUrl(`${server}/${asset.sha256}`) ?? '';
 }
 
 /** Human-readable platform label from f-tag identifiers. */
 export function platformLabel(platforms: string[]): string {
-  if (platforms.length === 0) return 'Universal';
+  if (platforms.length === 0) return 'Not declared';
   return platforms
     .map((p) => {
       const parts = p.split('-');

@@ -5,517 +5,119 @@
   import type { SoftwareApplication } from '../types.js';
   import { CHANNELS } from '../types.js';
   import { loadPipelineArtifacts } from '../pipelines.js';
-  import {
-    buildApplicationEvent,
-    createRelease,
-  } from '../releases.js';
-  import { publishEvent, getRelays } from '../releases.js';
+  import { appCoordinate } from '../trust.js';
+  import { loadJournal, preparePublication, publishJournal, type PublicationJournal } from '../publication.js';
   import ArtifactSelector from './ArtifactSelector.svelte';
+  import { onDestroy } from 'svelte';
 
-  interface Props {
-    bridge: WidgetBridge;
-    repo: RepoContext;
-    trustedMaintainers: string[];
-    existingApps: SoftwareApplication[];
-    onSuccess: () => void;
-    onCancel: () => void;
-  }
-
-  let { bridge, repo, trustedMaintainers, existingApps, onSuccess, onCancel }: Props = $props();
-
-  // ── Pipeline artifact state ───────────────────────────────────────────────
+  let { bridge, repo, existingApps, onSuccess, onCancel }: {
+    bridge: WidgetBridge; repo: RepoContext; existingApps: SoftwareApplication[];
+    onSuccess: () => void; onCancel: () => void;
+  } = $props();
+  const controller = new AbortController();
+  onDestroy(() => controller.abort());
   let pipelineData = $state<PipelineArtifactData | null>(null);
-  let loadingArtifacts = $state(true);
-  let artifactError = $state<string | null>(null);
-
-  $effect(() => {
-    if (!bridge || !repo) return;
-    loadingArtifacts = true;
-    artifactError = null;
-    loadPipelineArtifacts(bridge, repo, trustedMaintainers)
-      .then((data) => {
-        pipelineData = data;
-        loadingArtifacts = false;
-      })
-      .catch((err) => {
-        artifactError = err instanceof Error ? err.message : String(err);
-        loadingArtifacts = false;
-      });
-  });
-
-  // ── App state ─────────────────────────────────────────────────────────────
-  const hasExistingApp = $derived(existingApps.length > 0);
-  const defaultAppId = $derived(
-    existingApps[0]?.appId ?? repo.repoName ?? ''
-  );
-  const defaultAppName = $derived(
-    existingApps[0]?.name ?? repo.repoName ?? ''
-  );
-
+  let loading = $state(true);
+  let error = $state('');
+  let appChoice = $state('');
   let appId = $state('');
   let appName = $state('');
-
-  // Initialize from defaults once available
-  $effect(() => {
-    if (!appId && defaultAppId) appId = defaultAppId;
-    if (!appName && defaultAppName) appName = defaultAppName;
-  });
-
-  // ── Form state ────────────────────────────────────────────────────────────
+  let runId = $state('');
   let version = $state('');
   let channel = $state<string>('main');
-  let releaseNotes = $state('');
+  let notes = $state('');
   let selectedIds = $state(new Set<string>());
+  let verifiedIds = $state(new Set<string>());
   let submitting = $state(false);
-  let submitError = $state<string | null>(null);
-  let publishProgress = $state('');
+  let progress = $state('');
+  let journal = $state.raw<PublicationJournal | null>(null);
+  const app = $derived(existingApps.find(a => appCoordinate(a) === appChoice));
+  const artifacts = $derived(pipelineData?.artifactsByRun.get(runId) ?? []);
+  const canSubmit = $derived(!loading && !submitting && !journal && !!version.trim() && selectedIds.size > 0 && !!(app?.appId || appId.trim()));
 
-  function toggleArtifact(id: string) {
+  $effect(() => {
+    let disposed = false;
+    loading = true;
+    Promise.all([loadPipelineArtifacts(bridge, repo), loadJournal(bridge, repo)])
+      .then(([data, saved]) => { if (!disposed) { pipelineData = data; journal = saved; loading = false; } })
+      .catch((err: unknown) => { if (!disposed) { error = err instanceof Error ? err.message : String(err); loading = false; } });
+    return () => { disposed = true; };
+  });
+  function toggle(id: string) {
     const next = new Set(selectedIds);
-    if (next.has(id)) {
-      next.delete(id);
-    } else {
-      next.add(id);
-    }
+    if (next.has(id)) next.delete(id); else next.add(id);
     selectedIds = next;
   }
-
-  const canSubmit = $derived(
-    version.trim().length > 0 &&
-      selectedIds.size > 0 &&
-      appId.trim().length > 0 &&
-      !submitting
-  );
-
-  async function handleSubmit() {
-    if (!canSubmit || !bridge || !repo) return;
-
-    // Resolve the consensus artifact objects in declaration order
-    const groups = pipelineData?.groups ?? [];
-    const selectedArtifacts: import('../types.js').Artifact[] = [];
-    for (const group of groups) {
-      if (!group.consensusHash) continue;
-      const artifact = group.sha256Counts.get(group.consensusHash)?.[0];
-      if (artifact && selectedIds.has(artifact.eventId)) {
-        selectedArtifacts.push(artifact);
-      }
-    }
-
-    if (selectedArtifacts.length === 0) {
-      submitError = 'No valid artifacts selected.';
-      return;
-    }
-
-    submitting = true;
-    submitError = null;
-
-    const relays = getRelays(repo.repoRelays);
-
+  async function submit(resume = false) {
+    if (submitting || (!resume && !canSubmit)) return;
+    submitting = true; error = '';
+    const snapshot = JSON.parse(JSON.stringify(repo)) as RepoContext;
     try {
-      // Step 1: Create the application event if it doesn't exist
-      if (!hasExistingApp) {
-        publishProgress = 'Publishing application event…';
-        const repoAddr = repo.repoAddress;
-        const appEvent = buildApplicationEvent({
-          appId: appId.trim(),
-          name: appName.trim() || appId.trim(),
-          repoAddress: repoAddr,
-          repoRelay: relays[0] ?? '',
-        });
-        await publishEvent(bridge, appEvent, relays);
+      if (!journal) {
+        progress = 'Signing fixed release metadata. No events are published until all signatures are verified…';
+        journal = await preparePublication(bridge, snapshot, {
+          appId: app?.appId ?? appId.trim(), appPubkey: app?.pubkey ?? repo.userPubkey, appName: appName.trim(),
+          newApplication: !app, version: version.trim(), channel, releaseNotes: notes.trim(),
+          artifacts: artifacts.filter(a => selectedIds.has(a.eventId) && verifiedIds.has(a.eventId)),
+        }, controller.signal);
       }
-
-      // Step 2: Create kind 3063 assets + kind 30063 release (handled by createRelease)
-      // Multi-event publication is sequential, not atomic.
-      publishProgress = `Publishing ${selectedArtifacts.length} asset${selectedArtifacts.length !== 1 ? 's' : ''} and release…`;
-
-      // Derive commitId from selected artifacts
-      const commitId = selectedArtifacts.find((a) => a.commitId)?.commitId;
-
-      await createRelease(bridge, relays, {
-        appId: appId.trim(),
-        version: version.trim(),
-        channel,
-        releaseNotes: releaseNotes.trim(),
-        artifacts: selectedArtifacts,
-        commitId,
-      });
-
-      publishProgress = '';
-      onSuccess();
+      await publishJournal(bridge, snapshot, journal, controller.signal, message => progress = message);
+      if (!controller.signal.aborted) onSuccess();
     } catch (err) {
-      submitError = err instanceof Error ? err.message : String(err);
-      publishProgress = '';
-      submitting = false;
-    }
+      if (!controller.signal.aborted) error = `${err instanceof Error ? err.message : String(err)}${journal ? ' Some events may already be published. Resume retries the same signed event IDs.' : ''}`;
+    } finally { submitting = false; progress = ''; }
   }
 </script>
 
 <div class="create-release">
-  <div class="create-header">
-    <button class="btn-back" onclick={onCancel}>← Cancel</button>
-    <h2>New Release</h2>
-  </div>
-
-  <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
-    <!-- Application identifier -->
-    {#if !hasExistingApp}
-      <fieldset class="app-setup">
-        <legend>Application Setup</legend>
-        <p class="setup-hint">No application event found for this repository. One will be created with your first release.</p>
-        <div class="field-row">
-          <div class="field">
-            <label for="appId">App Identifier <span class="required">*</span></label>
-            <input
-              id="appId"
-              type="text"
-              bind:value={appId}
-              placeholder="e.g. com.example.myapp"
-              required
-              disabled={submitting}
-            />
-            <span class="field-hint">Reverse-domain notation recommended</span>
-          </div>
-          <div class="field">
-            <label for="appName">App Name</label>
-            <input
-              id="appName"
-              type="text"
-              bind:value={appName}
-              placeholder="My Application"
-              disabled={submitting}
-            />
-          </div>
-        </div>
+  <button onclick={onCancel} disabled={submitting}>← Releases</button>
+  <h2>New Release</h2>
+  <p>Signing as <code>{repo.userPubkey}</code></p>
+  {#if loading}<p>Loading authenticated pipeline runs…</p>{/if}
+  {#if journal}
+    <section>
+      <h3>Saved signed publication</h3>
+      <p>{journal.events.length} signed events for this repository/account. Resume does not create new signatures.</p>
+      <p>Release: <code>{journal.events.at(-1)?.tags.find(t => t[0] === 'd')?.[1]}</code></p>
+      <button disabled={submitting} onclick={() => void submit(true)}>Resume publication</button>
+    </section>
+  {:else}
+    <form onsubmit={(e) => { e.preventDefault(); void submit(); }}>
+      <fieldset disabled={submitting || loading}>
+        <legend>Application and release</legend>
+        <label>Application <select bind:value={appChoice}>
+          <option value="">Create application under my key</option>
+          {#each existingApps as existing (appCoordinate(existing))}<option value={appCoordinate(existing)}>{existing.name} — {existing.pubkey.slice(0, 12)}</option>{/each}
+        </select></label>
+        {#if !app}
+          <label>App identifier <input bind:value={appId} required placeholder="com.example.app" /></label>
+          <label>App name <input bind:value={appName} placeholder="Application name" /></label>
+        {:else}<code>{appCoordinate(app)}</code>{/if}
+        <label>Version <input bind:value={version} required placeholder="1.2.0" /></label>
+        <label>Channel <select bind:value={channel}>{#each CHANNELS as ch}<option value={ch}>{ch}</option>{/each}</select></label>
+        <p>The same app/version under your key replaces the previous release, even if you change channel.</p>
+        <label>Release notes <textarea bind:value={notes} rows="6"></textarea></label>
+        <label>Authenticated pipeline run <select bind:value={runId} onchange={() => { selectedIds = new Set(); verifiedIds = new Set(); }}>
+          <option value="">Choose a run</option>
+          {#each pipelineData?.runs ?? [] as run (run.id)}<option value={run.id}>{run.workflowName} · {run.branch} · {run.commitId.slice(0, 12)} · {new Date(run.createdAt * 1000).toLocaleString()}</option>{/each}
+        </select></label>
       </fieldset>
-    {:else}
-      <div class="app-badge">
-        <span class="app-label">App:</span>
-        <code>{appId}</code>
-      </div>
-    {/if}
-
-    <!-- Version + Channel -->
-    <div class="field-row">
-      <div class="field field-grow">
-        <label for="version">Version <span class="required">*</span></label>
-        <input
-          id="version"
-          type="text"
-          bind:value={version}
-          placeholder="e.g. 1.2.0 or v1.2.0-rc1"
-          required
-          disabled={submitting}
-        />
-      </div>
-      <div class="field field-fixed">
-        <label for="channel">Channel</label>
-        <select id="channel" bind:value={channel} disabled={submitting}>
-          {#each CHANNELS as ch}
-            <option value={ch}>{ch}</option>
-          {/each}
-        </select>
-      </div>
-    </div>
-
-    <!-- Release notes -->
-    <div class="field">
-      <label for="notes">Release notes</label>
-      <textarea
-        id="notes"
-        bind:value={releaseNotes}
-        rows={6}
-        placeholder="Describe what changed in this release… (Markdown supported)"
-        disabled={submitting}
-      ></textarea>
-    </div>
-
-    <!-- Artifact picker -->
-    <div class="field">
-      <span class="field-label" id="assets-label">
-        Assets <span class="required">*</span>
-        <span class="label-hint">(select build artifacts to include as kind 3063 assets)</span>
-      </span>
-
-      {#if loadingArtifacts}
-        <p class="sub-message">Loading pipeline artifacts…</p>
-      {:else if artifactError}
-        <p class="sub-error">Could not load artifacts: {artifactError}</p>
-      {:else}
-        <ArtifactSelector
-          groups={pipelineData?.groups ?? []}
-          {selectedIds}
-          onToggle={toggleArtifact}
-        />
-        {#if (pipelineData?.groups.length ?? 0) > 0}
-          <p class="selection-count">
-            {selectedIds.size} asset{selectedIds.size !== 1 ? 's' : ''} selected
-          </p>
-        {/if}
-      {/if}
-    </div>
-
-    {#if publishProgress}
-      <div class="progress-msg">{publishProgress}</div>
-    {/if}
-
-    {#if submitError}
-      <div class="submit-error">{submitError}</div>
-    {/if}
-
-    <div class="actions">
-      <button type="button" class="btn-secondary" onclick={onCancel} disabled={submitting}>
-        Cancel
-      </button>
-      <button type="submit" class="btn-primary" disabled={!canSubmit}>
-        {submitting ? 'Publishing…' : 'Publish Release'}
-      </button>
-    </div>
-  </form>
+      {#if runId}<ArtifactSelector {artifacts} {selectedIds} {verifiedIds} disabled={submitting} onToggle={toggle} onVerified={id => verifiedIds = new Set(verifiedIds).add(id)} />{/if}
+      <button type="submit" disabled={!canSubmit}>Publish Release</button>
+    </form>
+  {/if}
+  {#if progress}<p role="status">{progress}</p>{/if}
+  {#if error}<p role="alert" class="error">{error}</p>{/if}
 </div>
 
 <style>
-  .create-release {
-    padding: 1.25rem;
-  }
-
-  .create-header {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    margin-bottom: 1.25rem;
-  }
-
-  .btn-back {
-    background: none;
-    border: none;
-    color: var(--ext-accent);
-    font-size: 0.875rem;
-    cursor: pointer;
-    padding: 0.25rem 0.5rem;
-    border-radius: 4px;
-  }
-
-  .btn-back:hover {
-    background: var(--ext-accent-soft);
-  }
-
-  h2 {
-    margin: 0;
-    font-size: 1.1rem;
-    font-weight: 600;
-    color: var(--ext-text);
-  }
-
-  .app-setup {
-    border: 1px solid var(--ext-border-strong);
-    border-radius: 8px;
-    padding: 1rem 1.1rem;
-    margin-bottom: 1.25rem;
-    background: var(--ext-surface-2);
-  }
-
-  .app-setup legend {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--ext-text);
-    padding: 0 0.4rem;
-  }
-
-  .setup-hint {
-    margin: 0 0 0.75rem;
-    font-size: 0.8rem;
-    color: var(--ext-text-muted);
-  }
-
-  .app-badge {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin-bottom: 1.25rem;
-    padding: 0.5rem 0.75rem;
-    background: var(--ext-accent-soft-2);
-    border: 1px solid var(--ext-accent-soft-border);
-    border-radius: 6px;
-    font-size: 0.85rem;
-  }
-
-  .app-label {
-    color: var(--ext-text-secondary);
-    font-weight: 600;
-  }
-
-  .app-badge code {
-    font-family: monospace;
-    color: var(--ext-accent-hover);
-    font-size: 0.85rem;
-  }
-
-  .field-row {
-    display: flex;
-    gap: 0.75rem;
-    margin-bottom: 1.25rem;
-  }
-
-  .field-grow {
-    flex: 1 1 auto;
-  }
-
-  .field-fixed {
-    flex: 0 0 auto;
-    min-width: 120px;
-  }
-
-  .field {
-    margin-bottom: 1.25rem;
-  }
-
-  .field-row .field {
-    margin-bottom: 0;
-  }
-
-  label,
-  .field-label {
-    display: block;
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--ext-text);
-    margin-bottom: 0.4rem;
-  }
-
-  .required {
-    color: var(--ext-danger-text);
-  }
-
-  .label-hint {
-    font-weight: 400;
-    color: var(--ext-text-muted);
-    font-size: 0.8rem;
-    margin-left: 0.3rem;
-  }
-
-  .field-hint {
-    display: block;
-    margin-top: 0.2rem;
-    font-size: 0.75rem;
-    color: var(--ext-text-faint);
-  }
-
-  input[type='text'],
-  textarea,
-  select {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 0.5rem 0.65rem;
-    border: 1px solid var(--ext-border-strong);
-    border-radius: 6px;
-    font-size: 0.875rem;
-    font-family: inherit;
-    color: var(--ext-text);
-    background: var(--ext-surface);
-    transition: border-color 0.15s;
-  }
-
-  input[type='text']:focus,
-  textarea:focus,
-  select:focus {
-    outline: none;
-    border-color: var(--ext-accent);
-    box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.15);
-  }
-
-  input:disabled,
-  textarea:disabled,
-  select:disabled {
-    background: var(--ext-surface-2);
-    color: var(--ext-text-muted);
-  }
-
-  .sub-message {
-    margin: 0.25rem 0 0;
-    color: var(--ext-text-muted);
-    font-size: 0.875rem;
-  }
-
-  .sub-error {
-    margin: 0.25rem 0 0;
-    color: var(--ext-danger-text);
-    font-size: 0.875rem;
-    background: var(--ext-danger-bg);
-    border-radius: 6px;
-    padding: 0.5rem 0.75rem;
-  }
-
-  .selection-count {
-    margin: 0.4rem 0 0;
-    font-size: 0.8rem;
-    color: var(--ext-text-secondary);
-  }
-
-  .progress-msg {
-    margin-bottom: 1rem;
-    padding: 0.6rem 0.85rem;
-    background: var(--ext-accent-soft);
-    border: 1px solid var(--ext-accent-soft-border);
-    border-radius: 6px;
-    color: var(--ext-accent-hover);
-    font-size: 0.875rem;
-    font-weight: 500;
-  }
-
-  .submit-error {
-    margin-bottom: 1rem;
-    padding: 0.6rem 0.85rem;
-    background: var(--ext-danger-bg);
-    border: 1px solid var(--ext-danger-border);
-    border-radius: 6px;
-    color: var(--ext-danger-text);
-    font-size: 0.875rem;
-  }
-
-  .actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.6rem;
-  }
-
-  .btn-primary {
-    padding: 0.45rem 1rem;
-    background: var(--ext-accent);
-    color: var(--ext-accent-text);
-    border: none;
-    border-radius: 6px;
-    font-size: 0.875rem;
-    font-weight: 500;
-    cursor: pointer;
-  }
-
-  .btn-primary:hover:not(:disabled) {
-    background: var(--ext-accent-hover);
-  }
-
-  .btn-primary:disabled {
-    background: var(--ext-accent-muted);
-    cursor: not-allowed;
-  }
-
-  .btn-secondary {
-    padding: 0.45rem 1rem;
-    background: var(--ext-surface);
-    color: var(--ext-text);
-    border: 1px solid var(--ext-border-strong);
-    border-radius: 6px;
-    font-size: 0.875rem;
-    font-weight: 500;
-    cursor: pointer;
-  }
-
-  .btn-secondary:hover:not(:disabled) {
-    background: var(--ext-surface-2);
-  }
-
-  .btn-secondary:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
+  .create-release { padding: 1.25rem; }
+  fieldset, section { border: 1px solid var(--ext-border); border-radius: 6px; margin: 1rem 0; padding: 1rem; }
+  label { display: block; margin: 0.6rem 0; }
+  input, select, textarea { display: block; box-sizing: border-box; width: 100%; padding: 0.5rem; background: var(--ext-surface); color: var(--ext-text); border: 1px solid var(--ext-border); border-radius: 4px; }
+  button { padding: 0.5rem 0.8rem; color: var(--ext-accent-text); background: var(--ext-accent); border: none; border-radius: 4px; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  p { color: var(--ext-text-secondary); font-size: 0.85rem; overflow-wrap: anywhere; }
+  code { overflow-wrap: anywhere; }
+  .error { color: var(--ext-danger-text); }
 </style>

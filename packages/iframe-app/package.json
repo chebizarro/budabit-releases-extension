@@ -11,6 +11,7 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "@noble/hashes": "^2.0.1",
     "budabit-sdk": "^0.2.0",
     "nostr-tools": "^2.23.5",
     "dompurify": "^3.4.13",

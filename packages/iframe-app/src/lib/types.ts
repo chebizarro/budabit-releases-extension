@@ -135,6 +135,14 @@ export interface Artifact {
   filename: string; // filename or name tag
   mimeType: string; // m tag
   size?: number; // size tag (bytes)
+  appId?: string;
+  version?: string;
+  platforms?: string[];
+  versionCode?: number;
+  apkCertificateHashes?: string[];
+  minPlatformVersion?: string;
+  targetPlatformVersion?: string;
+  variant?: string;
   // Enriched from pipeline run context
   pipelineRunId?: string;
   workflowName?: string;

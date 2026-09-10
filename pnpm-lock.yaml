@@ -47,6 +47,9 @@ importers:
 
   packages/iframe-app:
     dependencies:
+      '@noble/hashes':
+        specifier: ^2.0.1
+        version: 2.0.1
       budabit-sdk:
         specifier: ^0.2.0
         version: 0.2.0(typescript@5.9.3)(vitest@2.1.9)

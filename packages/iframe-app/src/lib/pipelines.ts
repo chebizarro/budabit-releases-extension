@@ -1,169 +1,67 @@
-import type { NostrEvent, WidgetBridge } from 'budabit-sdk';
-import type { RepoContext } from './context.js';
-import type { Artifact, PipelineRun, ArtifactGroup } from './types.js';
-import { queryEvents, getRelays, tagValue } from './releases.js';
-
-const RUN_KIND = 5401;
-const ARTIFACT_KIND = 1063;
-
-// ── Types ────────────────────────────────────────────────────────────────────
+import type { WidgetBridge } from 'budabit-sdk';
+import { HEX_KEY, type RepoContext } from './context.js';
+import type { Artifact, PipelineRun } from './types.js';
+import { queryEvents, getRelays, tagValue, tagValues } from './releases.js';
+import { safeAssetUrl } from './binary.js';
 
 export interface PipelineArtifactData {
   runs: PipelineRun[];
   artifactsByRun: Map<string, Artifact[]>;
-  allArtifacts: Artifact[];
-  groups: ArtifactGroup[];
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function parseArtifactWithContext(event: NostrEvent, run: PipelineRun): Artifact | null {
-  const url = tagValue(event, 'url');
-  const sha256 = tagValue(event, 'x');
-  if (!url || !sha256) return null;
-  const sizeStr = tagValue(event, 'size');
-  return {
-    eventId: event.id,
-    url,
-    sha256,
-    filename: tagValue(event, 'filename') ?? tagValue(event, 'name') ?? 'unknown',
-    mimeType: tagValue(event, 'm') ?? 'application/octet-stream',
-    size: sizeStr ? parseInt(sizeStr, 10) || undefined : undefined,
-    pipelineRunId: run.id,
-    workflowName: run.workflowName,
-    branch: run.branch,
-    commitId: run.commitId || undefined,
-  };
-}
-
-function buildArtifactGroups(artifacts: Artifact[]): ArtifactGroup[] {
-  const byFilename = new Map<string, Artifact[]>();
-  for (const a of artifacts) {
-    const list = byFilename.get(a.filename) ?? [];
-    list.push(a);
-    byFilename.set(a.filename, list);
-  }
-
-  return Array.from(byFilename.entries()).map(([filename, arts]) => {
-    const sha256Counts = new Map<string, Artifact[]>();
-    for (const a of arts) {
-      const list = sha256Counts.get(a.sha256) ?? [];
-      list.push(a);
-      sha256Counts.set(a.sha256, list);
-    }
-    const sorted = [...sha256Counts.entries()].sort((a, b) => b[1].length - a[1].length);
-    const consensusHash = sorted[0]?.[0] ?? null;
-    return { filename, sha256Counts, consensusHash, isUnanimous: sorted.length === 1 };
-  });
-}
-
-// ── Main loader ──────────────────────────────────────────────────────────────
-
-/**
- * Two-phase load:
- *   1. Fetch kind 5401 workflow runs for the repo
- *   2. Fetch kind 1063 artifacts from trusted ephemeral publisher keys
- *
- * Only includes runs where `triggered-by` is in trustedMaintainers.
- */
-export async function loadPipelineArtifacts(
-  bridge: WidgetBridge,
-  repo: RepoContext,
-  trustedMaintainers: string[]
-): Promise<PipelineArtifactData> {
+/** A publisher delegation is accepted only from the authenticated run author. */
+export async function loadPipelineArtifacts(bridge: WidgetBridge, repo: RepoContext): Promise<PipelineArtifactData> {
   const relays = getRelays(repo.repoRelays);
-  const trustedSet = new Set(trustedMaintainers);
-  const empty: PipelineArtifactData = {
-    runs: [],
-    artifactsByRun: new Map(),
-    allArtifacts: [],
-    groups: [],
-  };
-
-  if (!repo.repoNaddr || trustedSet.size === 0) return empty;
-
-  // Phase 1: load workflow runs
-  const runEvents = await queryEvents(bridge, relays, {
-    kinds: [RUN_KIND],
-    '#a': [repo.repoNaddr],
+  const runsByPublisher = new Map<string, PipelineRun>();
+  const ambiguous = new Set<string>();
+  const events = await queryEvents(bridge, relays, {
+    kinds: [5401], authors: [...repo.maintainers], '#a': [repo.repoAddress],
   });
-
-  // Build trusted run map
-  const ephemeralToRun = new Map<string, PipelineRun>();
-  const runById = new Map<string, PipelineRun>();
-
-  for (const event of runEvents) {
-    const triggeredBy = tagValue(event, 'triggered-by');
+  for (const event of events) {
     const publisher = tagValue(event, 'publisher');
-    if (!triggeredBy || !trustedSet.has(triggeredBy) || !publisher) continue;
-
-    const run: PipelineRun = {
-      id: event.id,
-      workflowName:
-        tagValue(event, 'workflow') ?? tagValue(event, 'name') ?? 'workflow',
-      branch: tagValue(event, 'branch') ?? 'unknown',
-      commitId: tagValue(event, 'commit') ?? tagValue(event, 'r') ?? '',
-      createdAt: event.created_at,
-      ephemeralPubkey: publisher,
-      triggeredBy,
-    };
-
-    ephemeralToRun.set(publisher, run);
-    runById.set(event.id, run);
+    const actor = tagValue(event, 'triggered-by');
+    const commit = tagValue(event, 'commit');
+    if (event.kind !== 5401 || !repo.maintainers.includes(event.pubkey) || actor !== event.pubkey ||
+        !event.tags.some(t => t[0] === 'a' && t[1] === repo.repoAddress) ||
+        !publisher || !HEX_KEY.test(publisher) || !commit || !/^[0-9a-f]{40,64}$/.test(commit)) continue;
+    const previous = runsByPublisher.get(publisher);
+    if (previous && previous.id !== event.id) ambiguous.add(publisher);
+    runsByPublisher.set(publisher, {
+      id: event.id, workflowName: tagValue(event, 'workflow') ?? 'workflow',
+      branch: tagValue(event, 'branch') ?? '', commitId: commit, createdAt: event.created_at,
+      ephemeralPubkey: publisher, triggeredBy: event.pubkey,
+    });
   }
-
-  if (ephemeralToRun.size === 0) return empty;
-
-  const runs = [...new Set(ephemeralToRun.values())];
-  const ephemeralPubkeys = Array.from(ephemeralToRun.keys());
-  const runIds = Array.from(runById.keys());
-
-  // Phase 2: fetch 1063 artifacts (two filter approaches for coverage)
-  const seen = new Set<string>();
-  const allArtifactEvents: NostrEvent[] = [];
-
-  const addEvents = (events: NostrEvent[]) => {
-    for (const e of events) {
-      if (!seen.has(e.id)) {
-        seen.add(e.id);
-        allArtifactEvents.push(e);
-      }
-    }
-  };
-
-  if (ephemeralPubkeys.length > 0) {
-    addEvents(
-      await queryEvents(bridge, relays, {
-        kinds: [ARTIFACT_KIND],
-        authors: ephemeralPubkeys,
-      })
-    );
-  }
-  if (runIds.length > 0) {
-    addEvents(
-      await queryEvents(bridge, relays, {
-        kinds: [ARTIFACT_KIND],
-        '#e': runIds,
-      })
-    );
-  }
-
-  // Resolve each artifact to its run
+  for (const publisher of ambiguous) runsByPublisher.delete(publisher);
+  const runs = [...runsByPublisher.values()].sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
   const artifactsByRun = new Map<string, Artifact[]>();
-  const allArtifacts: Artifact[] = [];
-
-  for (const event of allArtifactEvents) {
-    const run = ephemeralToRun.get(event.pubkey);
-    if (!run) continue;
-    const artifact = parseArtifactWithContext(event, run);
-    if (!artifact) continue;
-    allArtifacts.push(artifact);
-    const list = artifactsByRun.get(run.id) ?? [];
-    list.push(artifact);
-    artifactsByRun.set(run.id, list);
+  if (!runs.length) return { runs, artifactsByRun };
+  const artifacts = await queryEvents(bridge, relays, { kinds: [1063], authors: [...runsByPublisher.keys()] });
+  const seen = new Set<string>();
+  for (const event of artifacts) {
+    const run = runsByPublisher.get(event.pubkey);
+    const url = safeAssetUrl(tagValue(event, 'url'));
+    const sha256 = tagValue(event, 'x');
+    const refs = tagValues(event, 'e');
+    const commit = tagValue(event, 'commit');
+    // No e-tag is compatible with per-run ephemeral publishers. Conflicting references are not.
+    if (event.kind !== 1063 || !run || !url || !sha256 || !HEX_KEY.test(sha256) || seen.has(event.id) ||
+        (refs.length > 0 && refs.some(id => id !== run.id)) || (commit && commit !== run.commitId)) continue;
+    seen.add(event.id);
+    const integer = (key: string) => {
+      const text = tagValue(event, key);
+      return text !== undefined && /^\d+$/.test(text) && Number.isSafeInteger(Number(text)) ? Number(text) : undefined;
+    };
+    const artifact: Artifact = {
+      eventId: event.id, url, sha256, filename: tagValue(event, 'filename') ?? tagValue(event, 'name') ?? sha256,
+      mimeType: tagValue(event, 'm') ?? 'application/octet-stream', size: integer('size'),
+      appId: tagValue(event, 'i'), version: tagValue(event, 'version'), platforms: tagValues(event, 'f'),
+      versionCode: integer('version_code'), apkCertificateHashes: tagValues(event, 'apk_certificate_hash'),
+      minPlatformVersion: tagValue(event, 'min_platform_version'), targetPlatformVersion: tagValue(event, 'target_platform_version'),
+      variant: tagValue(event, 'variant'), pipelineRunId: run.id, workflowName: run.workflowName,
+      branch: run.branch, commitId: run.commitId,
+    };
+    artifactsByRun.set(run.id, [...(artifactsByRun.get(run.id) ?? []), artifact]);
   }
-
-  runs.sort((a, b) => b.createdAt - a.createdAt);
-
-  return { runs, artifactsByRun, allArtifacts, groups: buildArtifactGroups(allArtifacts) };
+  return { runs, artifactsByRun };
 }

@@ -29,7 +29,6 @@
   let discoveredApps = $state<SoftwareApplication[]>([]);
 
   // ── Derived helpers ───────────────────────────────────────────────────────
-  const trustedMaintainers = $derived(repoContext?.maintainers ?? []);
   const isMaintainer = $derived(repoContext !== null && canPublish(repoContext));
 
   // ── Bridge lifecycle ──────────────────────────────────────────────────────
@@ -47,7 +46,7 @@
     const b = createWidgetBridge({
       targetWindow: window.parent,
       targetOrigin: '*',
-      timeoutMs: 15000,
+      timeoutMs: 120000, // interactive signers may need user approval; host bounds queries separately
     });
 
     bridge = b;
@@ -154,7 +153,6 @@
     <CreateRelease
       {bridge}
       repo={repoContext}
-      {trustedMaintainers}
       existingApps={discoveredApps}
       onSuccess={handleCreateSuccess}
       onCancel={handleBack}
