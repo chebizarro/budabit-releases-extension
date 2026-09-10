@@ -5,6 +5,7 @@ import {
   preparePublication,
   publishJournal,
   loadJournal,
+  discardJournal,
   requestOk,
   type ReleaseDraft,
 } from './publication.js';
@@ -41,6 +42,8 @@ function host() {
   let viewer = testPubkey(),
     signer = 1,
     failPublish = false;
+  let apps: NostrEvent[] = [signed()];
+  let complete = true;
   const b = {
     request: async (action: string, raw: unknown) => {
       calls.push(action);
@@ -54,7 +57,7 @@ function host() {
         stored = structuredClone(payload.data);
         return { status: 'ok' };
       }
-      if (action === 'nostr:query') return { status: 'ok', complete: true, events: [signed()] };
+      if (action === 'nostr:query') return { status: 'ok', complete, events: apps };
       if (action === 'nostr:publish') {
         const event = payload.event as NostrEvent;
         published.push(event.id);
@@ -72,16 +75,86 @@ function host() {
     setViewer: (v: string) => (viewer = v),
     setSigner: (v: number) => (signer = v),
     fail: (v: boolean) => (failPublish = v),
+    setApps: (events: NostrEvent[], done = true) => {
+      apps = events;
+      complete = done;
+    },
   };
 }
 
 describe('NIP-82 publication', () => {
+  it.each([false, true])(
+    'reconciles newer application revocation on restore and same-session retry (embedded=%s)',
+    async (newApplication) => {
+      const h = host();
+      const journal = await preparePublication(h.b, testRepo(), { ...draft(), newApplication });
+      h.fail(true);
+      await expect(publishJournal(h.b, testRepo(), journal)).rejects.toThrow('timed out');
+      const before = h.published.length;
+      h.setApps([
+        signed({
+          created_at: Math.floor(Date.now() / 1000) + 1,
+          tags: [
+            ['d', 'app'],
+            ['name', 'App'],
+          ],
+        }),
+      ]);
+      h.fail(false);
+      await expect(loadJournal(h.b, testRepo())).rejects.toThrow('application links');
+      await expect(publishJournal(h.b, testRepo(), journal)).rejects.toThrow('application links');
+      expect(h.published).toHaveLength(before);
+    }
+  );
+  it('allows a newer linked app revision but stops before writes on incomplete discovery', async () => {
+    const h = host();
+    const journal = await preparePublication(h.b, testRepo(), draft());
+    h.setApps([signed({ created_at: Math.floor(Date.now() / 1000) + 1 })]);
+    expect(await loadJournal(h.b, testRepo())).toMatchObject({ events: journal.events });
+    h.setApps([], false);
+    const calls = h.calls.length;
+    await expect(publishJournal(h.b, testRepo(), journal)).rejects.toThrow('incomplete');
+    expect(h.calls.slice(calls)).not.toContain('storage:set');
+    expect(h.published).toEqual([]);
+  });
   it('rechecks application linkage before signatures when creation outlives list discovery', async () => {
     const h = host();
     await expect(
       preparePublication(h.b, testRepo(), { ...draft(), newApplication: false, appId: 'revoked' })
     ).rejects.toThrow('linkage changed');
     expect(h.calls).not.toContain('nostr:sign');
+    expect(h.published).toEqual([]);
+  });
+  it('discards only the pinned recovery key and refuses changed or aborted context', async () => {
+    const h = host();
+    const journal = await preparePublication(h.b, testRepo(), draft());
+    h.setStored(journal);
+    h.setViewer(testPubkey(2));
+    const before = h.calls.filter((c) => c === 'storage:set').length;
+    await expect(discardJournal(h.b, testRepo())).rejects.toThrow('account changed');
+    expect(h.calls.filter((c) => c === 'storage:set')).toHaveLength(before);
+    h.setViewer(testPubkey());
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(discardJournal(h.b, testRepo(), aborted.signal)).rejects.toThrow();
+    const payloads: unknown[] = [];
+    const bridge = {
+      request: async (action: string, payload: unknown) => {
+        if (action === 'storage:set') payloads.push(payload);
+        return h.b.request(action, payload);
+      },
+    } as unknown as WidgetBridge;
+    await discardJournal(bridge, testRepo());
+    expect(payloads).toEqual([
+      {
+        key: `release-publication-v1:${testPubkey()}`,
+        repoScoped: true,
+        expectedRepoAddress: testRepo().repoAddress,
+        expectedPubkey: testPubkey(),
+        data: null,
+      },
+    ]);
+    expect(await loadJournal(h.b, testRepo())).toBeNull();
     expect(h.published).toEqual([]);
   });
   it('fails closed on invalid drafts, aborts and malformed bridge responses', async () => {

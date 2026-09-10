@@ -80,6 +80,7 @@ let viewer = repo.userPubkey,
 let signatures = 0;
 let resolveFallback: (() => void) | undefined;
 let holdAssets = false;
+let failDiscard = false;
 const pendingAssets: (() => void)[] = [];
 const holdFallback = new URLSearchParams(location.search).has('holdFallback');
 const published: string[] = JSON.parse(sessionStorage.getItem('fixture-publish-attempts') || '[]');
@@ -149,6 +150,11 @@ window.addEventListener('message', (event) => {
       payload = { status: 'ok', data: storage.get(p.key) ?? null };
       break;
     case 'storage:set':
+      if (p.data === null && failDiscard) {
+        failDiscard = false;
+        payload = { error: 'Synthetic storage failure' };
+        break;
+      }
       storage.set(p.key, p.data);
       sessionStorage.setItem('fixture-journals', JSON.stringify([...storage]));
       payload = { status: 'ok' };
@@ -220,6 +226,16 @@ document.querySelector('#revoke')!.addEventListener('click', () => {
 });
 Object.assign(window, {
   releaseHarness: {
+    corruptJournal() {
+      storage.set(`release-publication-v1:${repo.userPubkey}`, { schema: 'corrupt' });
+      sessionStorage.setItem('fixture-journals', JSON.stringify([...storage]));
+    },
+    get hasJournal() {
+      return !!storage.get(`release-publication-v1:${repo.userPubkey}`);
+    },
+    failDiscard() {
+      failDiscard = true;
+    },
     holdAssets() {
       holdAssets = true;
     },

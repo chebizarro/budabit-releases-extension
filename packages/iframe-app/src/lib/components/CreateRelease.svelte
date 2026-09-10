@@ -8,6 +8,7 @@
   import { appCoordinate } from '../trust.js';
   import {
     loadJournal,
+    discardJournal,
     preparePublication,
     publishJournal,
     type PublicationJournal,
@@ -45,25 +46,38 @@
   let submitting = $state(false);
   let progress = $state('');
   let journal = $state.raw<PublicationJournal | null>(null);
+  let loadFailure = $state<'journal' | 'pipeline' | ''>('');
+  let retryLoad = $state(0);
+  let confirmDiscard = $state(false);
   const app = $derived(existingApps.find((a) => appCoordinate(a) === appChoice));
   const artifacts = $derived(pipelineData?.artifactsByRun.get(runId) ?? []);
   const canSubmit = $derived(
     !loading &&
       !submitting &&
       !journal &&
+      !loadFailure &&
+      !!pipelineData &&
       !!version.trim() &&
       selectedIds.size > 0 &&
       !!(app?.appId || appId.trim())
   );
 
   $effect(() => {
+    void retryLoad;
     let disposed = false;
+    let stage: 'journal' | 'pipeline' = 'journal';
     loading = true;
-    loadJournal(bridge, repo)
+    error = '';
+    loadFailure = '';
+    journal = null;
+    pipelineData = null;
+    confirmDiscard = false;
+    loadJournal(bridge, repo, controller.signal)
       .then(async (saved) => {
         if (disposed) return;
         journal = saved;
         if (!saved) {
+          stage = 'pipeline';
           const data = await loadPipelineArtifacts(bridge, repo);
           if (!disposed) pipelineData = data;
         }
@@ -71,6 +85,7 @@
       })
       .catch((err: unknown) => {
         if (!disposed) {
+          loadFailure = stage;
           error = err instanceof Error ? err.message : String(err);
           loading = false;
         }
@@ -79,6 +94,19 @@
       disposed = true;
     };
   });
+  async function discard() {
+    if (!confirmDiscard || submitting) return;
+    submitting = true;
+    const snapshot = JSON.parse(JSON.stringify(repo)) as RepoContext;
+    try {
+      await discardJournal(bridge, snapshot, controller.signal);
+      if (!controller.signal.aborted) retryLoad++;
+    } catch (err) {
+      if (!controller.signal.aborted) error = err instanceof Error ? err.message : String(err);
+    } finally {
+      submitting = false;
+    }
+  }
   function toggle(id: string) {
     const next = new Set(selectedIds);
     if (next.has(id)) next.delete(id);
@@ -146,16 +174,42 @@
   <h2>New Release</h2>
   <p>Signing as <code>{repo.userPubkey}</code></p>
   {#if loading}<p>Loading authenticated pipeline runs…</p>{/if}
-  {#if journal}
-    <section>
-      <h3>Saved signed publication</h3>
-      <p>
-        {journal.events.length} signed events for this repository/account. Resume does not create new
-        signatures.
-      </p>
-      <p>Release: <code>{journal.events.at(-1)?.tags.find((t) => t[0] === 'd')?.[1]}</code></p>
-      <button disabled={submitting} onclick={() => void submit(true)}>Resume publication</button>
+  {#if journal || loadFailure === 'journal'}
+    <section aria-label="Publication recovery">
+      {#if journal}
+        <h3>Saved signed publication</h3>
+        <p>
+          {journal.events.length} signed events for this repository/account. Resume does not create new
+          signatures.
+        </p>
+        <p>Release: <code>{journal.events.at(-1)?.tags.find((t) => t[0] === 'd')?.[1]}</code></p>
+        <button disabled={submitting || loading} onclick={() => void submit(true)}
+          >Resume publication</button
+        >
+      {:else}<h3>Saved publication could not be validated</h3>
+        <p>
+          Local recovery data has not been removed. Retry validation, or explicitly discard it to
+          start another release.
+        </p>
+      {/if}
+      <button disabled={submitting || loading} onclick={() => retryLoad++}>Retry recovery</button>
+      {#if confirmDiscard}
+        <p>
+          Discarding local recovery data does not undo events already published. You will lose the
+          saved batch for identical-ID retries.
+        </p>
+        <button disabled={submitting} onclick={() => (confirmDiscard = false)}
+          >Keep recovery data</button
+        >
+        <button disabled={submitting} onclick={() => void discard()}>Confirm discard</button>
+      {:else}
+        <button disabled={submitting || loading} onclick={() => (confirmDiscard = true)}
+          >Discard local recovery data</button
+        >
+      {/if}
     </section>
+  {:else if loadFailure === 'pipeline'}
+    <button onclick={() => retryLoad++}>Retry loading runs</button>
   {:else}
     <form
       onsubmit={(e) => {

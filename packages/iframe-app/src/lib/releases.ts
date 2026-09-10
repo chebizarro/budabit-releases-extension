@@ -174,7 +174,8 @@ export function appMatchesRepo(app: SoftwareApplication, repo: RepoContext): boo
  */
 export async function loadRepoApps(
   bridge: WidgetBridge,
-  repo: RepoContext
+  repo: RepoContext,
+  candidates: NostrEvent[] = []
 ): Promise<SoftwareApplication[]> {
   const relays = getRelays(repo.repoRelays);
 
@@ -182,7 +183,12 @@ export async function loadRepoApps(
 
   // Query by authors so a replacement removing the repo link can revoke it.
   const results = await queryEvents(bridge, relays, { kinds: [APP_KIND], authors });
-  return replacements(results)
+  // A saved signed application is a candidate revision, never a substitute for
+  // current discovery. In particular, reconcile revocations BEFORE authorization.
+  return replacements([
+    ...results,
+    ...candidates.map(verifiedEvent).filter((e): e is NostrEvent => !!e),
+  ])
     .filter((event) => authorizedApplication(event, repo))
     .map(parseApplication);
 }

@@ -168,6 +168,101 @@ test('marks incomplete discovery and recovers without leaking subscriptions', as
   await expect(page.locator('#metrics')).toContainText('Active subscriptions: 1');
 });
 
+test('recovers a corrupt journal only after confirmed discard, preserving it on cancel or storage failure', async ({
+  page,
+}) => {
+  const widget = page.frameLocator('iframe');
+  await page.evaluate(() =>
+    (
+      window as unknown as { releaseHarness: { corruptJournal(): void } }
+    ).releaseHarness.corruptJournal()
+  );
+  await widget.getByRole('button', { name: 'New Release', exact: true }).click();
+  await expect(
+    widget.getByRole('heading', { name: 'Saved publication could not be validated' })
+  ).toBeVisible();
+  await widget.getByRole('button', { name: 'Retry recovery', exact: true }).click();
+  await expect(widget.getByRole('alert')).toContainText('invalid');
+  await widget.getByRole('button', { name: 'Discard local recovery data', exact: true }).click();
+  await expect(
+    widget.getByText('Discarding local recovery data does not undo', { exact: false })
+  ).toBeVisible();
+  await widget.getByRole('button', { name: 'Keep recovery data', exact: true }).click();
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { releaseHarness: { hasJournal: boolean } }).releaseHarness.hasJournal
+    )
+  ).toBe(true);
+  await page.evaluate(() =>
+    (window as unknown as { releaseHarness: { failDiscard(): void } }).releaseHarness.failDiscard()
+  );
+  await widget.getByRole('button', { name: 'Discard local recovery data', exact: true }).click();
+  await widget.getByRole('button', { name: 'Confirm discard', exact: true }).click();
+  await expect(widget.getByRole('alert')).toHaveText('Synthetic storage failure');
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { releaseHarness: { hasJournal: boolean } }).releaseHarness.hasJournal
+    )
+  ).toBe(true);
+  await widget.getByRole('button', { name: 'Confirm discard', exact: true }).click();
+  await expect(
+    widget
+      .getByRole('combobox', { name: 'Authenticated pipeline run', exact: true })
+      .locator('option')
+  ).toHaveCount(2);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { releaseHarness: { hasJournal: boolean } }).releaseHarness.hasJournal
+    )
+  ).toBe(false);
+  await expect(page.locator('#metrics')).toContainText('publish attempts: 0');
+});
+
+test('stops same-session resume after app revocation and exposes recovery when reopened', async ({
+  page,
+}) => {
+  const widget = page.frameLocator('iframe');
+  await page.getByRole('button', { name: 'Fail next publication', exact: true }).click();
+  await widget.getByRole('button', { name: 'New Release', exact: true }).click();
+  await widget
+    .getByRole('combobox', { name: 'Application', exact: true })
+    .selectOption({ index: 1 });
+  await widget.getByLabel('Version', { exact: true }).fill('2');
+  await widget
+    .getByRole('combobox', { name: 'Authenticated pipeline run', exact: true })
+    .selectOption({ index: 1 });
+  await widget
+    .getByLabel('Verify local file')
+    .setInputFiles({
+      name: 'fixture.bin',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('test'),
+    });
+  await widget.getByRole('checkbox', { name: 'Include fixture.bin' }).check();
+  await widget.getByRole('button', { name: 'Publish Release', exact: true }).click();
+  await expect(widget.getByRole('alert')).toContainText('Synthetic relay timeout');
+  await page.getByRole('button', { name: 'Revoke application', exact: true }).click();
+  await widget.getByRole('button', { name: 'Resume publication', exact: true }).click();
+  await expect(widget.getByRole('alert')).toContainText('application links');
+  await expect(page.locator('#metrics')).toContainText('publish attempts: 1');
+  await widget.getByRole('button', { name: '← Releases', exact: true }).click();
+  await widget.getByRole('button', { name: 'New Release', exact: true }).click();
+  await expect(
+    widget.getByRole('heading', { name: 'Saved publication could not be validated' })
+  ).toBeVisible();
+  await widget.getByRole('button', { name: 'Discard local recovery data', exact: true }).click();
+  await widget.getByRole('button', { name: 'Confirm discard', exact: true }).click();
+  await expect(
+    widget
+      .getByRole('combobox', { name: 'Authenticated pipeline run', exact: true })
+      .locator('option')
+  ).toHaveCount(2);
+  await expect(page.locator('#metrics')).toContainText('publish attempts: 1');
+});
+
 test('keeps detail authority live through replacement and revocation, including delayed assets', async ({
   page,
 }) => {

@@ -1,14 +1,13 @@
 import type { NostrEvent, WidgetBridge } from 'budabit-sdk';
 import type { EventTemplate } from 'nostr-tools';
 import { isMaintainer, normalizeContext, record, type RepoContext } from './context.js';
-import { appCoordinate, authorizedApplication, authorizedRelease, verifiedEvent } from './trust.js';
+import { appCoordinate, authorizedRelease, verifiedEvent } from './trust.js';
 import {
   buildApplicationEvent,
   buildAssetEvent,
   buildReleaseEvent,
   getRelays,
   loadRepoApps,
-  parseApplication,
   tagValues,
 } from './releases.js';
 import type { Artifact } from './types.js';
@@ -174,15 +173,25 @@ async function saveJournal(
 
 export async function loadJournal(
   bridge: WidgetBridge,
-  repo: RepoContext
+  repo: RepoContext,
+  signal?: AbortSignal
 ): Promise<PublicationJournal | null> {
   const response = await requestOk(bridge, 'storage:get', {
     key: journalKey(repo),
     repoScoped: true,
     ...scope(repo),
   });
-  if (!response.data) return null;
-  const value = record(response.data);
+  if (response.data == null) return null;
+  return validateJournal(bridge, repo, response.data, signal);
+}
+
+async function validateJournal(
+  bridge: WidgetBridge,
+  repo: RepoContext,
+  input: unknown,
+  signal?: AbortSignal
+): Promise<PublicationJournal> {
+  const value = record(input);
   if (
     value.schema !== 1 ||
     value.repoAddress !== repo.repoAddress ||
@@ -199,9 +208,9 @@ export async function loadJournal(
   const release = verified.at(-1);
   if (!release) throw new Error('Stored publication is empty');
   const appEvents = verified.filter((e) => e.kind === 32267);
-  const apps = appEvents.length
-    ? appEvents.filter((e) => authorizedApplication(e, repo)).map(parseApplication)
-    : await loadRepoApps(bridge, repo);
+  await assertActive(bridge, repo, signal);
+  const apps = await loadRepoApps(bridge, repo, appEvents);
+  await assertActive(bridge, repo, signal);
   const assets = verified.filter((e) => e.kind === 3063);
   if (
     appEvents.length > 1 ||
@@ -230,8 +239,12 @@ export async function publishJournal(
 ): Promise<void> {
   if (journal.publisher !== repo.userPubkey || journal.repoAddress !== repo.repoAddress)
     throw new Error('Publication scope changed');
+  // Always validate here as well as on restore: a same-session retry can outlive
+  // an application revocation. Pin the independently verified batch across awaits.
+  const current = await validateJournal(bridge, repo, journal, signal);
+  journal.events = current.events;
   journal.accepted = [];
-  for (const event of journal.events) {
+  for (const event of current.events) {
     await assertActive(bridge, repo, signal);
     onProgress?.(`Publishing ${journal.accepted.length + 1} of ${journal.events.length} events…`);
     const response = await requestOk(bridge, 'nostr:publish', {
@@ -250,6 +263,15 @@ export async function publishJournal(
     if (!journal.accepted.includes(event.id)) journal.accepted.push(event.id);
     await saveJournal(bridge, repo, journal, signal);
   }
+  await discardJournal(bridge, repo, signal);
+}
+
+/** Delete only local recovery state, after explicit user confirmation in the UI. */
+export async function discardJournal(
+  bridge: WidgetBridge,
+  repo: RepoContext,
+  signal?: AbortSignal
+) {
   await assertActive(bridge, repo, signal);
   await requestOk(bridge, 'storage:set', {
     key: journalKey(repo),
