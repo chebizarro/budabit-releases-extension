@@ -1,24 +1,20 @@
 <script lang="ts">
-  import type { NostrEvent, WidgetBridge } from 'budabit-sdk';
-  import type { RepoContext } from '../context.js';
-  import type { SoftwareApplication } from '../types.js';
+  import type { NostrEvent } from 'budabit-sdk';
   import { formatDate, parseReleaseListItem, platformLabel, tagValues } from '../releases.js';
-  import { startReleaseList, type ListState } from '../list-controller.js';
+  import type { ListState } from '../list-controller.js';
   let {
-    bridge,
-    repo,
+    list,
+    onRetry,
     isMaintainer,
     onViewRelease,
     onCreateRelease,
   }: {
-    bridge: WidgetBridge;
-    repo: RepoContext;
+    list: ListState;
+    onRetry: () => void;
     isMaintainer: boolean;
     onViewRelease: (event: NostrEvent) => void;
-    onCreateRelease: (apps: SoftwareApplication[]) => void;
+    onCreateRelease: () => void;
   } = $props();
-  let list = $state<ListState>({ apps: [], events: [], loading: true, partial: false, error: '' });
-  let retry = $state(0);
   let version = $state(''),
     platform = $state('all'),
     days = $state('all'),
@@ -36,21 +32,13 @@
   );
   const pages = $derived(Math.max(1, Math.ceil(filtered.length / 20)));
   const current = $derived(Math.min(page, pages));
-  $effect(() => {
-    void retry;
-    const session = startReleaseList(bridge, repo, (next) => (list = next));
-    return () => {
-      void session.dispose();
-    };
-  });
 </script>
 
 <div class="release-list">
   <header>
     <h2>Releases</h2>
-    {#if isMaintainer}<button
-        disabled={list.loading || list.partial}
-        onclick={() => onCreateRelease(list.apps)}>New Release</button
+    {#if isMaintainer}<button disabled={list.loading || list.partial} onclick={onCreateRelease}
+        >New Release</button
       >{/if}
   </header>
   <p>
@@ -61,7 +49,7 @@
     <div role="alert" class="notice">
       {list.error || 'Relay results are incomplete. This is not the full release history.'}
       Publication is disabled until discovery completes.
-      <button onclick={() => retry++}>Retry discovery</button>
+      <button onclick={onRetry}>Retry discovery</button>
     </div>
   {/if}
   {#if list.loading}<p role="status">Loading releases…</p>{/if}

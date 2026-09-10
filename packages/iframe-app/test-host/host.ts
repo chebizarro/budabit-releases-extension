@@ -79,6 +79,8 @@ let viewer = repo.userPubkey,
   sequence = 0;
 let signatures = 0;
 let resolveFallback: (() => void) | undefined;
+let holdAssets = false;
+const pendingAssets: (() => void)[] = [];
 const holdFallback = new URLSearchParams(location.search).has('holdFallback');
 const published: string[] = JSON.parse(sessionStorage.getItem('fixture-publish-attempts') || '[]');
 const storage = new Map<string, unknown>(
@@ -173,10 +175,14 @@ window.addEventListener('message', (event) => {
     default:
       payload = { error: `Unsupported fixture action ${message.action}` };
   }
-  iframe.contentWindow?.postMessage(
-    { type: 'response', action: message.action, id: message.id, payload },
-    location.origin
-  );
+  const reply = () =>
+    iframe.contentWindow?.postMessage(
+      { type: 'response', action: message.action, id: message.id, payload },
+      location.origin
+    );
+  if (message.action === 'nostr:query' && p.filter.kinds?.includes(3063) && holdAssets)
+    pendingAssets.push(reply);
+  else reply();
   metrics();
 });
 document.querySelector('#logout')!.addEventListener('click', () => {
@@ -205,8 +211,25 @@ document.querySelector('#replace')!.addEventListener('click', () => {
     if (matchFilter(filter, next))
       push('nostr:subscription:event', { subscriptionId: id, event: next });
 });
+document.querySelector('#revoke')!.addEventListener('click', () => {
+  const next = signed({ ...app, created_at: now + 2, tags: app.tags.filter((t) => t[0] !== 'a') });
+  data.push(next);
+  for (const [id, filter] of subscriptions)
+    if (matchFilter(filter, next))
+      push('nostr:subscription:event', { subscriptionId: id, event: next });
+});
 Object.assign(window, {
   releaseHarness: {
+    holdAssets() {
+      holdAssets = true;
+    },
+    get pendingAssets() {
+      return pendingAssets.length;
+    },
+    resolveAssets() {
+      holdAssets = false;
+      pendingAssets.splice(0).forEach((reply) => reply());
+    },
     get fallbackPending() {
       return !!resolveFallback;
     },

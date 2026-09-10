@@ -166,15 +166,16 @@ describe('NIP-82 parsers, builders and display helpers', () => {
     expect(assetDownloadUrl({ ...asset, url: undefined, sha256: 'bad' })).toBe('');
     expect(assetDownloadUrl({ ...asset, url: undefined }, 'http://unsafe.example')).toBe('');
   });
-  it('rejects an outsider detail before making queries and handles an empty declaration', async () => {
+  it('rejects outsider and empty declarations even when supplied as the current selection', async () => {
     const bridge = {
       request: async () => ({ status: 'ok', complete: true, events: [] }),
     } as unknown as WidgetBridge;
-    await expect(loadReleaseDetail(bridge, testRepo(), releaseFixture({}, 2))).rejects.toThrow(
-      'maintainer'
-    );
-    expect(await loadReleaseDetail(bridge, testRepo(), releaseFixture({ tags: [] }))).toMatchObject(
-      { assets: [], unresolvedAssetIds: [], complete: true }
-    );
+    for (const event of [releaseFixture({}, 2), releaseFixture({ tags: [] })])
+      await expect(
+        loadReleaseDetail(bridge, testRepo(), event, () => ({
+          apps: [parseApplication(signed())],
+          events: [event],
+        }))
+      ).rejects.toThrow('current authorized');
   });
 });

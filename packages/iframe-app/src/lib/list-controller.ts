@@ -35,6 +35,7 @@ export function startReleaseList(
   let hostId: string | null = null;
   let pending: { subscriptionId: string; event: NostrEvent }[] = [];
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let emitTimer: ReturnType<typeof setTimeout> | undefined;
   let partial = false;
   const apps = new Map<string, NostrEvent>(),
     releases = new Map<string, NostrEvent>();
@@ -55,6 +56,8 @@ export function startReleaseList(
     };
   }
   function emit() {
+    clearTimeout(emitTimer);
+    emitTimer = undefined;
     if (!disposed) onState(state());
   }
   function apply(raw: unknown) {
@@ -106,7 +109,8 @@ export function startReleaseList(
     if (payload.subscriptionId !== hostId) return;
     if (!discovered && liveIds.size < MAX_EVENTS) liveIds.add(payload.event.id);
     apply(payload.event);
-    emit();
+    // Coalesce relay backfill across message tasks, not just within one callback.
+    emitTimer ??= setTimeout(emit, 16);
     clearTimeout(timer);
     timer = setTimeout(() => void saveCache(), 500);
   });
@@ -203,6 +207,7 @@ export function startReleaseList(
       controller.abort();
       off();
       clearTimeout(timer);
+      clearTimeout(emitTimer);
       pending = [];
       await closeSubscription();
       await ready;

@@ -12,16 +12,18 @@
     shortHash,
     assetDownloadUrl,
     platformLabel,
+    type ReleaseAuthority,
   } from '../releases.js';
 
   interface Props {
     bridge: WidgetBridge;
     repo: RepoContext;
     releaseEvent: NostrEvent;
+    currentAuthority: () => ReleaseAuthority;
     onBack: () => void;
   }
 
-  let { bridge, repo, releaseEvent, onBack }: Props = $props();
+  let { bridge, repo, releaseEvent, currentAuthority, onBack }: Props = $props();
 
   let release = $state<SoftwareRelease | null>(null);
   let loading = $state(true);
@@ -68,7 +70,7 @@
     error = null;
     release = null;
 
-    loadReleaseDetail(bridge, repo, releaseEvent)
+    loadReleaseDetail(bridge, repo, releaseEvent, currentAuthority)
       .then((r) => {
         if (disposed) return;
         release = r;

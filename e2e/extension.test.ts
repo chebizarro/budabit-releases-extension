@@ -168,6 +168,46 @@ test('marks incomplete discovery and recovers without leaking subscriptions', as
   await expect(page.locator('#metrics')).toContainText('Active subscriptions: 1');
 });
 
+test('keeps detail authority live through replacement and revocation, including delayed assets', async ({
+  page,
+}) => {
+  const widget = page.frameLocator('iframe');
+  await widget.locator('.release-card').click();
+  await expect(widget.getByRole('link', { name: 'Download', exact: true })).toBeVisible();
+  await expect(page.locator('#metrics')).toContainText('Active subscriptions: 1');
+  await page.getByRole('button', { name: 'Replace release', exact: true }).click();
+  await expect(widget.getByRole('heading', { name: 'Replacement notes' })).toBeVisible();
+  await expect(widget.getByText('This release was replaced.', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Revoke application', exact: true }).click();
+  await expect(widget.getByRole('alert')).toContainText('no longer authorized');
+  await expect(widget.getByRole('link', { name: 'Download', exact: true })).toHaveCount(0);
+  await expect(widget.getByText('Verified metadata publisher:', { exact: false })).toHaveCount(0);
+
+  await page.reload();
+  await page.evaluate(() =>
+    (window as unknown as { releaseHarness: { holdAssets(): void } }).releaseHarness.holdAssets()
+  );
+  await widget.locator('.release-card').click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as unknown as { releaseHarness: { pendingAssets: number } }).releaseHarness
+            .pendingAssets
+      )
+    )
+    .toBeGreaterThan(0);
+  await page.getByRole('button', { name: 'Revoke application', exact: true }).click();
+  await expect(widget.getByRole('alert')).toContainText('no longer authorized');
+  await page.evaluate(() =>
+    (
+      window as unknown as { releaseHarness: { resolveAssets(): void } }
+    ).releaseHarness.resolveAssets()
+  );
+  await expect(widget.getByRole('link', { name: 'Download', exact: true })).toHaveCount(0);
+  await expect(widget.getByRole('alert')).toContainText('no longer authorized');
+});
+
 test('keeps filenames readable and confines mobile overflow to the asset table', async ({
   page,
 }) => {
@@ -206,24 +246,20 @@ test('does not reuse a stale file-check result after retrying asset metadata', a
       return bytes;
     };
   });
-  await widget
-    .getByLabel('Verify local file')
-    .setInputFiles({
-      name: 'fixture.bin',
-      mimeType: 'application/octet-stream',
-      buffer: Buffer.from('test'),
-    });
+  await widget.getByLabel('Verify local file').setInputFiles({
+    name: 'fixture.bin',
+    mimeType: 'application/octet-stream',
+    buffer: Buffer.from('test'),
+  });
   await expect
     .poll(() => widget.locator('body').evaluate(() => 'releasePendingFileRead' in window))
     .toBe(true);
   await widget.getByRole('button', { name: 'Retry assets', exact: true }).click();
-  await widget
-    .getByLabel('Verify local file')
-    .setInputFiles({
-      name: 'other.bin',
-      mimeType: 'application/octet-stream',
-      buffer: Buffer.from('evil'),
-    });
+  await widget.getByLabel('Verify local file').setInputFiles({
+    name: 'other.bin',
+    mimeType: 'application/octet-stream',
+    buffer: Buffer.from('evil'),
+  });
   await expect(widget.getByRole('status')).toContainText('mismatch');
   await widget.locator('body').evaluate(async () => {
     (window as unknown as { releasePendingFileRead: () => void }).releasePendingFileRead();

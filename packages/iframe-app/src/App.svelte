@@ -8,7 +8,8 @@
     isMaintainer as canPublish,
     type RepoContext,
   } from './lib/context.js';
-  import type { SoftwareApplication } from './lib/types.js';
+  import { startReleaseList, type ListState } from './lib/list-controller.js';
+  import { coordinate } from './lib/trust.js';
   import ReleaseList from './lib/components/ReleaseList.svelte';
   import ReleaseDetail from './lib/components/ReleaseDetail.svelte';
   import CreateRelease from './lib/components/CreateRelease.svelte';
@@ -23,7 +24,32 @@
   type View = 'list' | 'detail' | 'create';
   let view = $state<View>('list');
   let selectedEvent = $state<NostrEvent | null>(null);
-  let discoveredApps = $state<SoftwareApplication[]>([]);
+  const emptyList = (): ListState => ({
+    apps: [],
+    events: [],
+    loading: true,
+    partial: false,
+    error: '',
+  });
+  let list = $state.raw<ListState>(emptyList());
+  let retryDiscovery = $state(0);
+  const currentAuthority = () => list;
+  const currentEvent = $derived(
+    selectedEvent && !list.loading
+      ? list.events.find((e) => coordinate(e) === coordinate(selectedEvent!))
+      : null
+  );
+
+  // Authority belongs to the repository session, not the currently visible view.
+  $effect(() => {
+    void retryDiscovery;
+    if (!bridge || !repoContext) return;
+    list = emptyList();
+    const session = startReleaseList(bridge, repoContext, (next) => (list = next));
+    return () => {
+      void session.dispose();
+    };
+  });
 
   // ── Derived helpers ───────────────────────────────────────────────────────
   const isMaintainer = $derived(repoContext !== null && canPublish(repoContext));
@@ -38,7 +64,7 @@
     repoContext = next;
     view = 'list';
     selectedEvent = null;
-    discoveredApps = [];
+    list = emptyList();
   }
 
   onMount(() => {
@@ -111,8 +137,7 @@
     view = 'detail';
   }
 
-  function handleCreateRelease(apps: SoftwareApplication[]) {
-    discoveredApps = apps;
+  function handleCreateRelease() {
     view = 'create';
   }
 
@@ -122,6 +147,7 @@
   }
 
   function handleCreateSuccess() {
+    retryDiscovery++;
     view = 'list';
     selectedEvent = null;
   }
@@ -137,19 +163,41 @@
       {#if contextError}<pre class="debug-log" role="alert">{contextError}</pre>{/if}
     </div>
   {:else if view === 'detail' && selectedEvent}
-    <ReleaseDetail {bridge} repo={repoContext} releaseEvent={selectedEvent} onBack={handleBack} />
+    {#if currentEvent}
+      {#if currentEvent.id !== selectedEvent.id}<p role="status">
+          This release was replaced. Showing the current revision.
+        </p>{/if}
+      {#if list.partial}<p role="alert">
+          Relay discovery is incomplete; current authority may be stale.
+        </p>{/if}
+      {#key currentEvent.id}
+        <ReleaseDetail
+          {bridge}
+          repo={repoContext}
+          releaseEvent={currentEvent}
+          {currentAuthority}
+          onBack={handleBack}
+        />
+      {/key}
+    {:else}
+      <button onclick={handleBack}>← Releases</button>
+      <p role="alert">
+        This release is no longer authorized or its current revision is unavailable. Downloads have
+        been removed.
+      </p>
+    {/if}
   {:else if view === 'create' && isMaintainer}
     <CreateRelease
       {bridge}
       repo={repoContext}
-      existingApps={discoveredApps}
+      existingApps={list.apps}
       onSuccess={handleCreateSuccess}
       onCancel={handleBack}
     />
   {:else}
     <ReleaseList
-      {bridge}
-      repo={repoContext}
+      {list}
+      onRetry={() => retryDiscovery++}
       {isMaintainer}
       onViewRelease={handleViewRelease}
       onCreateRelease={handleCreateRelease}

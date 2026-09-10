@@ -1,10 +1,29 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { WidgetBridge } from 'budabit-sdk';
-import { loadReleaseDetail, parseAsset, platformLabel } from './releases.js';
+import { loadReleaseDetail, parseApplication, parseAsset, platformLabel } from './releases.js';
 import { releaseNotesHtml } from './markdown.js';
 import { releaseFixture, signed, testRepo } from './test-fixtures.js';
 
 describe('release detail', () => {
+  it('rejects revoked or superseded detail on entry and after a delayed asset response', async () => {
+    const release = releaseFixture();
+    let state = { apps: [parseApplication(signed())], events: [release] };
+    const request = vi.fn(async () => ({ status: 'ok', complete: true, events: [] }));
+    const bridge = { request } as unknown as WidgetBridge;
+    state = { ...state, events: [releaseFixture({ created_at: 101 })] };
+    await expect(loadReleaseDetail(bridge, testRepo(), release, () => state)).rejects.toThrow(
+      'current authorized'
+    );
+    expect(request).not.toHaveBeenCalled();
+    state = { apps: [], events: [release] };
+    await expect(loadReleaseDetail(bridge, testRepo(), release, () => state)).rejects.toThrow(
+      'current authorized'
+    );
+    state = { apps: [parseApplication(signed())], events: [release] };
+    const pending = loadReleaseDetail(bridge, testRepo(), release, () => state);
+    state = { apps: [], events: [] };
+    await expect(pending).rejects.toThrow('current authorized');
+  });
   it('preserves independent asset identity, explicit filename, relay hints and unresolved IDs', async () => {
     const asset = signed(
       {
@@ -30,7 +49,8 @@ describe('release detail', () => {
     const detail = await loadReleaseDetail(
       { request } as unknown as WidgetBridge,
       testRepo(),
-      release
+      release,
+      () => ({ apps: [parseApplication(signed())], events: [release] })
     );
     expect(detail.assets[0]).toMatchObject({
       appId: 'independent',

@@ -1,6 +1,6 @@
 import type { NostrEvent, WidgetBridge } from 'budabit-sdk';
 import { normalizeRelays, type RepoContext } from './context.js';
-import { authorizedApplication, replacements, verifiedEvent } from './trust.js';
+import { authorizedApplication, authorizedRelease, replacements, verifiedEvent } from './trust.js';
 import { HEX_KEY } from './context.js';
 import { safeAssetUrl } from './binary.js';
 import { queryAll } from './query.js';
@@ -192,13 +192,26 @@ export async function loadRepoApps(
 /**
  * Load full release detail: fetch linked kind 3063 asset events.
  */
+export interface ReleaseAuthority {
+  apps: SoftwareApplication[];
+  events: NostrEvent[];
+}
+
 export async function loadReleaseDetail(
   bridge: WidgetBridge,
   repo: RepoContext,
-  releaseEvent: NostrEvent
+  releaseEvent: NostrEvent,
+  currentAuthority: () => ReleaseAuthority
 ): Promise<SoftwareRelease> {
-  if (!verifiedEvent(releaseEvent) || !repo.maintainers.includes(releaseEvent.pubkey))
-    throw new Error('Release is not signed by a current maintainer');
+  const assertCurrent = () => {
+    const current = currentAuthority();
+    if (
+      !current.events.some((e) => e.id === releaseEvent.id) ||
+      !authorizedRelease(releaseEvent, repo, current.apps)
+    )
+      throw new Error('Release is not the current authorized revision');
+  };
+  assertCurrent();
   const relays = normalizeRelays([
     ...releaseEvent.tags.filter((t) => t[0] === 'e').map((t) => t[2]),
     ...getRelays(repo.repoRelays),
@@ -231,6 +244,7 @@ export async function loadReleaseDetail(
     assets = assetEventIds.map((id) => byId.get(id)).filter((a): a is SoftwareAsset => !!a);
   }
 
+  assertCurrent();
   return {
     id: releaseEvent.id,
     pubkey: releaseEvent.pubkey,

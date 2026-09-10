@@ -3,8 +3,14 @@ import type { NostrEvent } from 'budabit-sdk';
 import { HEX_KEY, record, type RepoContext } from './context.js';
 import type { SoftwareApplication } from './types.js';
 
-/** Copy only serialized fields: never trust a cached verification symbol from a relay. */
+// Only this module can admit records. IDs and nostr-tools' public verification symbol
+// are NOT membership proofs. Owned records (including every tag) are immutable.
+const ownedEvents = new WeakSet();
+
+/** Verify external input once; reuse only our immutable, already-verified records. */
 export function verifiedEvent(input: unknown): NostrEvent | null {
+  if (typeof input === 'object' && input !== null && ownedEvents.has(input))
+    return input as NostrEvent;
   const value = record(input);
   try {
     const event = {
@@ -27,10 +33,17 @@ export function verifiedEvent(input: unknown): NostrEvent | null {
       typeof event.content !== 'string' ||
       event.content.length > 100_000 ||
       !Array.isArray(event.tags) ||
-      event.tags.length > 2000
+      event.tags.length > 2000 ||
+      event.tags.some((t) => !Array.isArray(t) || t.some((value) => typeof value !== 'string'))
     )
       return null;
-    return verifyEvent(event) ? event : null;
+    event.tags = event.tags.map((t) => [...t]);
+    if (!verifyEvent(event)) return null;
+    for (const t of event.tags) Object.freeze(t);
+    Object.freeze(event.tags);
+    Object.freeze(event);
+    ownedEvents.add(event);
+    return event;
   } catch {
     return null;
   }

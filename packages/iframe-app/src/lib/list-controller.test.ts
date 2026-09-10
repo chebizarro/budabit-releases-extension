@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import type { NostrEvent, WidgetBridge } from 'budabit-sdk';
 import { startReleaseList, type ListState } from './list-controller.js';
 import { releaseFixture, signed, testRepo } from './test-fixtures.js';
+import { verifyEvent } from 'nostr-tools/pure';
+
+vi.mock('nostr-tools/pure', async (original) => {
+  const actual = await original<typeof import('nostr-tools/pure')>();
+  return { ...actual, verifyEvent: vi.fn(actual.verifyEvent) };
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -39,6 +45,27 @@ function host(events: NostrEvent[] = [], cache: unknown = null) {
 }
 
 describe('release list lifecycle and trust', () => {
+  it('verifies a substantial backfill once per input and coalesces emissions', async () => {
+    const events = Array.from({ length: 250 }, (_, i) =>
+      releaseFixture({
+        tags: releaseFixture().tags.map((t) =>
+          t[0] === 'd' ? ['d', `app@${i}`] : t[0] === 'version' ? ['version', String(i)] : t
+        ),
+      })
+    );
+    const h = host([signed()]);
+    const onState = vi.fn();
+    const session = startReleaseList(h.bridge, testRepo(), onState);
+    await session.ready;
+    vi.mocked(verifyEvent).mockClear();
+    onState.mockClear();
+    for (const event of events) h.send(event);
+    await vi.waitFor(() => expect(onState).toHaveBeenCalledTimes(1));
+    expect(verifyEvent).toHaveBeenCalledTimes(events.length);
+    expect(onState).toHaveBeenCalledTimes(1);
+    expect(onState.mock.lastCall?.[0].events).toHaveLength(events.length);
+    await session.dispose();
+  });
   it('does not subscribe or emit after disposal during cache loading', async () => {
     const h = host(),
       cache = deferred<Awaited<ReturnType<typeof h.request>>>();
@@ -87,7 +114,7 @@ describe('release list lifecycle and trust', () => {
         ],
       })
     );
-    expect(state.apps).toHaveLength(0);
+    await vi.waitFor(() => expect(state.apps).toHaveLength(0));
     expect(state.events).toHaveLength(0);
     await session.dispose();
   });

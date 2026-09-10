@@ -5,6 +5,19 @@ import { signed, releaseFixture, testPubkey, testRepo } from './test-fixtures.js
 import type { WidgetBridge } from 'budabit-sdk';
 
 describe('release authority', () => {
+  it('owns immutable verified records without trusting mutable copies or IDs', () => {
+    const raw = signed();
+    const owned = verifiedEvent(raw)!;
+    expect(Object.isFrozen(owned)).toBe(true);
+    expect(Object.isFrozen(owned.tags)).toBe(true);
+    expect(Object.isFrozen(owned.tags[0])).toBe(true);
+    expect(verifiedEvent(owned)).toBe(owned);
+    raw.tags[0]![1] = 'tampered';
+    expect(owned.tags[0]?.[1]).toBe('app');
+    expect(verifiedEvent(raw)).toBeNull();
+    expect(verifiedEvent({ ...owned, content: 'forged same ID' })).toBeNull();
+    expect(verifiedEvent({ ...owned, tags: ['not an array'] })).toBeNull();
+  });
   it('rejects tampered signatures even after prior verification', () => {
     const event = signed();
     expect(verifiedEvent(event)).not.toBeNull();
