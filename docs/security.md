@@ -3,10 +3,10 @@
 ## Trust chain
 
 1. Budabit supplies the exact repository coordinate and current owner/maintainers. The host and its repository authority are part of the trust boundary.
-2. The widget verifies serialized Nostr event signatures itself, without inheriting cached verification flags.
+2. The widget verifies serialized Nostr event signatures itself, without inheriting cached verification flags. Internally owned events and their tags are immutable; a module-private WeakSet permits reusing their verified state without redoing cryptography on every authorization check. Raw copies and matching IDs do not inherit trust.
 3. An application must be signed by a current owner/maintainer and carry the exact repository `a` link. URL basenames, shared display names and owner-key substrings never establish identity.
 4. A release must be signed by a current owner/maintainer and link exactly to a discovered application via `32267:<publisher>:<identifier>`. Its `i`, `version`, `d` and channel/reference metadata must agree. An unrelated key cannot gain release authority by copying `i`.
-5. Addressable replacements are reconciled by `(kind,pubkey,d)`, newest timestamp then lowest ID. Replacements are processed before authorization filtering, so removing an application/release link can remove an older authorized revision from view.
+5. Addressable replacements are reconciled by `(kind,pubkey,d)`, newest timestamp then lowest ID. Replacements are processed before authorization filtering, so removing an application/release link removes an older authorized revision from view. The authority controller remains active across navigation, including open detail; asset replies cannot restore revoked detail.
 6. Asset signatures and IDs are verified. A maintainer's explicit release reference endorses the referenced metadata; assets may have different publishers, identifiers and versions. Their bytes remain a separate verification step.
 
 Legacy unlinked releases are excluded. Older cached events are reverified and re-authorized; caches never supply application authority. EOSE is not proof of an honest relay or global latestness. A compromised maintainer or host can still endorse malicious software.
@@ -27,7 +27,7 @@ The widget does **not** validate APK/native signatures, certificate trust, malwa
 
 The intended account/repository is checked before every signing/publication request. Returned signatures/templates are verified; account/context updates reset the UI and abort further work. All signatures are collected before publication starts, and the fixed signed batch must be saved first. No private account key is sent to the iframe.
 
-A signer prompt already open in the host cannot be canceled by a widget timeout. Publication is sequential and may partially succeed. Resume resends the same signed IDs, never creates replacement signatures based on an uncertain ACK, and revalidates saved signatures/linkage. Local acceptance markers are not authoritative. Journals are local, not encrypted, and contain public signed metadata; do not include secrets in release notes.
+A signer prompt already open in the host cannot be canceled by a widget timeout. Publication is sequential and may partially succeed. Every batch attempt (including same-session resume) revalidates signatures/linkage against current application discovery, merging any embedded application as a candidate revision before authorization. Incomplete discovery or a newer revocation prevents starting the batch. A subsequent revocation may still race remote writes; this is not a transaction or proof of global latestness. Resume resends the same signed IDs, never creates replacement signatures based on an uncertain ACK. Local acceptance markers are not authoritative. Journals are local, not encrypted, and contain public signed metadata; do not include secrets in release notes. Invalid journals can be retried or explicitly discarded after a warning that local discard cannot undo publication.
 
 ## Untrusted rendering and embedding
 

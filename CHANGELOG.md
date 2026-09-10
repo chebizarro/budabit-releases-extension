@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security and correctness
 
+- Correct the host completeness dependency: relay pages need isolated Welshman loader/tracker instances (`a8716cfb9`); shared-loader deduplication could conceal older history.
+- Keep application/release authority live while detail is open, update replacements and remove revoked downloads, including during delayed asset resolution.
+- Reuse only immutable, internally verified events and coalesce live updates; a 250-event regression now performs 250 signature checks rather than 31,875.
+- Re-discover application authority before every publication/resume attempt, including embedded application journals and same-session retry; reconcile newer revocations first.
+- Add retry and confirmed scoped discard for invalid publication recovery data, preserving it on cancellation/storage failure and warning that remote publication is not undone.
+- Check publisher delegation reuse across current maintainers' repository scopes before accepting legacy pipeline artifacts.
+- Restrict notes to passive Markdown elements/attributes; Chromium tests verify media/poster markup causes no automatic third-party requests.
+
 - Verify Nostr signatures and current maintainer authority with exact repository/application coordinates; reject unlinked legacy releases and cross-repository heuristics.
 - Reconcile addressable revisions by publisher/d-tag and process linkage revocations.
 - Authenticate pipeline run signers and publisher delegations; select one run instead of historical filename voting.

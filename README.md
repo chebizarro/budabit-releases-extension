@@ -5,8 +5,8 @@ A Svelte 5 repository-tab widget for discovering and publishing Nostr-signed sof
 ## What it verifies
 
 - Application (`32267`) and release (`30063`) signatures, current repository owner/maintainer authorship, and exact repository/application coordinates.
-- Addressable replacement order: newest timestamp, then lowest event ID on a timestamp tie, within each publisher's namespace.
-- Pipeline run (`5401`) signer and artifact (`1063`) publisher delegation. Artifacts are selected from **one run**, not voted across historical filenames.
+- Addressable replacement order: newest timestamp, then lowest event ID on a timestamp tie, within each publisher's namespace. An open detail view stays subscribed: replacements update the view, and application revocation removes downloads.
+- Pipeline run (`5401`) signer and artifact (`1063`) publisher delegation, checked for reuse across all discovered repository scopes of current maintainers. Artifacts are selected from **one run**, not voted across historical filenames.
 - SHA-256 and optional size of an explicitly selected local file, up to 512 MiB. Creation requires a matching local copy for each selected artifact.
 
 **A metadata signature is not a native/APK signature check, a signed Git tag, a reproducible-build guarantee, or proof that software is safe.** Downloads are not automatically fetched, executed or hashed. See [security and trust policy](docs/security.md).
@@ -35,7 +35,7 @@ Unit coverage measures executable domain TypeScript, not uninstrumented Svelte m
 
 ## Host compatibility
 
-Use Budabit with the bridge integration introduced in host commit `c97928826` or an implementation of the [same wire contract](docs/host-bridge.md). Older hosts lacking explicit query completeness show a partial-results warning and cannot initiate a new publication. The actual repo-tab surface is supported; it must not be assumed identical to ordinary `WidgetFrame`.
+Use Budabit with the bridge integration introduced in `c97928826` **and the independent relay-page fix in `a8716cfb9`**, or an implementation of the [same wire contract](docs/host-bridge.md). `c97928826` alone could falsely report completeness because the shared Welshman loader deduplicated across relay pages. Older hosts lacking explicit query completeness show a partial-results warning and cannot initiate a new publication. The actual repo-tab surface is supported; it must not be assumed identical to ordinary `WidgetFrame`.
 
 The widget declares `nostr:sign`, `nostr:publish`, `nostr:query`, `nostr:subscribe`, **`nostr:unsubscribe`**, `storage:get` and `storage:set`, with kinds `32267, 30063, 3063, 1063, 5401`.
 
@@ -48,6 +48,8 @@ The widget declares `nostr:sign`, `nostr:publish`, `nostr:query`, `nostr:subscri
 5. Submit. All fixed metadata templates are signed and checked first, then saved locally, then published in application → assets → release order.
 
 Publishing is **not atomic**. On a partial/unknown outcome, return with the same account and use **Resume publication** to resend the saved event IDs without new signatures. Local acceptance markers are not treated as proof of relay persistence. Signing timeouts do not cancel a host signer prompt, but no events are published before all signatures are verified and the journal is saved.
+
+Every publication attempt, including same-session retries, re-discovers current application authority. A saved application event participates in replacement reconciliation; it cannot override a newer revocation. Incomplete discovery or lost authority blocks publication. Invalid recovery data offers **Retry recovery** and a confirmed **Discard local recovery data** action. Discard affects only this repository/account's journal, does not undo published events, and loses identical-ID retry capability for that batch.
 
 The same application/version under your publishing key is one addressable release, even across different channels. Changing channel replaces that release; it does not create an independent channel namespace.
 
@@ -64,7 +66,9 @@ Manifest generation writes unsigned kind `30033` metadata to `dist/widget/` and 
 
 - Up to eight relays, five 100-event pages per relay, inclusive timestamp cursors. Overflow at a shared second is reported incomplete instead of silently skipping events.
 - Relay EOSE means completion of that bounded response, not global history completeness or proof that no newer revision exists elsewhere.
-- Any incomplete discovery disables new publication. Detail keeps unresolved asset IDs visible and offers retry.
+- Any incomplete discovery disables new publication and prevents starting/resuming a saved batch. Detail keeps unresolved asset IDs visible and offers retry; known application revocations invalidate even an already open detail view.
+- Notes allow passive Markdown, not media or automatic third-party resource loads. HTTPS links open only on user activation.
+- Legacy unlinked pipeline artifacts rely on a unique delegation within completed current-maintainer discovery across repositories, not a global guarantee that a publisher key has never been reused.
 - Cached releases are hints, not application authority. See [storage](docs/storage.md).
 - Native signatures, live signer services, CDN redirects in deployment, offline/PWA behavior and large real binary downloads require separate operational verification.
 
