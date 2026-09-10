@@ -17,8 +17,7 @@ type ThemeCapableBridge = {
   onEvent(action: string, handler: (payload: unknown) => void): () => void;
 };
 
-const isHostTheme = (value: unknown): value is HostTheme =>
-  value === 'light' || value === 'dark';
+const isHostTheme = (value: unknown): value is HostTheme => value === 'light' || value === 'dark';
 
 /** Apply a host theme payload to the document. Safe to call with any payload. */
 export function applyHostTheme(payload: unknown): void {

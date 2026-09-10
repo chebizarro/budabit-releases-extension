@@ -10,33 +10,55 @@ export interface PipelineArtifactData {
 }
 
 /** A publisher delegation is accepted only from the authenticated run author. */
-export async function loadPipelineArtifacts(bridge: WidgetBridge, repo: RepoContext): Promise<PipelineArtifactData> {
+export async function loadPipelineArtifacts(
+  bridge: WidgetBridge,
+  repo: RepoContext
+): Promise<PipelineArtifactData> {
   const relays = getRelays(repo.repoRelays);
   const runsByPublisher = new Map<string, PipelineRun>();
   const ambiguous = new Set<string>();
   const events = await queryEvents(bridge, relays, {
-    kinds: [5401], authors: [...repo.maintainers], '#a': [repo.repoAddress],
+    kinds: [5401],
+    authors: [...repo.maintainers],
+    '#a': [repo.repoAddress],
   });
   for (const event of events) {
     const publisher = tagValue(event, 'publisher');
     const actor = tagValue(event, 'triggered-by');
     const commit = tagValue(event, 'commit');
-    if (event.kind !== 5401 || !repo.maintainers.includes(event.pubkey) || actor !== event.pubkey ||
-        !event.tags.some(t => t[0] === 'a' && t[1] === repo.repoAddress) ||
-        !publisher || !HEX_KEY.test(publisher) || !commit || !/^[0-9a-f]{40,64}$/.test(commit)) continue;
+    if (
+      event.kind !== 5401 ||
+      !repo.maintainers.includes(event.pubkey) ||
+      actor !== event.pubkey ||
+      !event.tags.some((t) => t[0] === 'a' && t[1] === repo.repoAddress) ||
+      !publisher ||
+      !HEX_KEY.test(publisher) ||
+      !commit ||
+      !/^[0-9a-f]{40,64}$/.test(commit)
+    )
+      continue;
     const previous = runsByPublisher.get(publisher);
     if (previous && previous.id !== event.id) ambiguous.add(publisher);
     runsByPublisher.set(publisher, {
-      id: event.id, workflowName: tagValue(event, 'workflow') ?? 'workflow',
-      branch: tagValue(event, 'branch') ?? '', commitId: commit, createdAt: event.created_at,
-      ephemeralPubkey: publisher, triggeredBy: event.pubkey,
+      id: event.id,
+      workflowName: tagValue(event, 'workflow') ?? 'workflow',
+      branch: tagValue(event, 'branch') ?? '',
+      commitId: commit,
+      createdAt: event.created_at,
+      ephemeralPubkey: publisher,
+      triggeredBy: event.pubkey,
     });
   }
   for (const publisher of ambiguous) runsByPublisher.delete(publisher);
-  const runs = [...runsByPublisher.values()].sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+  const runs = [...runsByPublisher.values()].sort(
+    (a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)
+  );
   const artifactsByRun = new Map<string, Artifact[]>();
   if (!runs.length) return { runs, artifactsByRun };
-  const artifacts = await queryEvents(bridge, relays, { kinds: [1063], authors: [...runsByPublisher.keys()] });
+  const artifacts = await queryEvents(bridge, relays, {
+    kinds: [1063],
+    authors: [...runsByPublisher.keys()],
+  });
   const seen = new Set<string>();
   for (const event of artifacts) {
     const run = runsByPublisher.get(event.pubkey);
@@ -45,21 +67,43 @@ export async function loadPipelineArtifacts(bridge: WidgetBridge, repo: RepoCont
     const refs = tagValues(event, 'e');
     const commit = tagValue(event, 'commit');
     // No e-tag is compatible with per-run ephemeral publishers. Conflicting references are not.
-    if (event.kind !== 1063 || !run || !url || !sha256 || !HEX_KEY.test(sha256) || seen.has(event.id) ||
-        (refs.length > 0 && refs.some(id => id !== run.id)) || (commit && commit !== run.commitId)) continue;
+    if (
+      event.kind !== 1063 ||
+      !run ||
+      !url ||
+      !sha256 ||
+      !HEX_KEY.test(sha256) ||
+      seen.has(event.id) ||
+      (refs.length > 0 && refs.some((id) => id !== run.id)) ||
+      (commit && commit !== run.commitId)
+    )
+      continue;
     seen.add(event.id);
     const integer = (key: string) => {
       const text = tagValue(event, key);
-      return text !== undefined && /^\d+$/.test(text) && Number.isSafeInteger(Number(text)) ? Number(text) : undefined;
+      return text !== undefined && /^\d+$/.test(text) && Number.isSafeInteger(Number(text))
+        ? Number(text)
+        : undefined;
     };
     const artifact: Artifact = {
-      eventId: event.id, url, sha256, filename: tagValue(event, 'filename') ?? tagValue(event, 'name') ?? sha256,
-      mimeType: tagValue(event, 'm') ?? 'application/octet-stream', size: integer('size'),
-      appId: tagValue(event, 'i'), version: tagValue(event, 'version'), platforms: tagValues(event, 'f'),
-      versionCode: integer('version_code'), apkCertificateHashes: tagValues(event, 'apk_certificate_hash'),
-      minPlatformVersion: tagValue(event, 'min_platform_version'), targetPlatformVersion: tagValue(event, 'target_platform_version'),
-      variant: tagValue(event, 'variant'), pipelineRunId: run.id, workflowName: run.workflowName,
-      branch: run.branch, commitId: run.commitId,
+      eventId: event.id,
+      url,
+      sha256,
+      filename: tagValue(event, 'filename') ?? tagValue(event, 'name') ?? sha256,
+      mimeType: tagValue(event, 'm') ?? 'application/octet-stream',
+      size: integer('size'),
+      appId: tagValue(event, 'i'),
+      version: tagValue(event, 'version'),
+      platforms: tagValues(event, 'f'),
+      versionCode: integer('version_code'),
+      apkCertificateHashes: tagValues(event, 'apk_certificate_hash'),
+      minPlatformVersion: tagValue(event, 'min_platform_version'),
+      targetPlatformVersion: tagValue(event, 'target_platform_version'),
+      variant: tagValue(event, 'variant'),
+      pipelineRunId: run.id,
+      workflowName: run.workflowName,
+      branch: run.branch,
+      commitId: run.commitId,
     };
     artifactsByRun.set(run.id, [...(artifactsByRun.get(run.id) ?? []), artifact]);
   }

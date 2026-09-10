@@ -15,17 +15,40 @@ describe('release authority', () => {
     const repo = testRepo();
     expect(authorizedApplication(signed(), repo)).toBe(true);
     expect(authorizedApplication(signed({}, 2), repo)).toBe(false);
-    expect(appMatchesRepo({ ...parseApplication(signed()), repoAddress: `30617:${repo.repoPubkey}:other` }, repo)).toBe(false);
-    expect(appMatchesRepo({ ...parseApplication(signed()), repoAddress: undefined, name: 'repo', repositoryUrl: 'https://evil.example/owner/repo' }, repo)).toBe(false);
+    expect(
+      appMatchesRepo(
+        { ...parseApplication(signed()), repoAddress: `30617:${repo.repoPubkey}:other` },
+        repo
+      )
+    ).toBe(false);
+    expect(
+      appMatchesRepo(
+        {
+          ...parseApplication(signed()),
+          repoAddress: undefined,
+          name: 'repo',
+          repositoryUrl: 'https://evil.example/owner/repo',
+        },
+        repo
+      )
+    ).toBe(false);
   });
   it('rejects correctly signed outsider releases and unlinked releases', () => {
     const apps = [parseApplication(signed())];
     expect(authorizedRelease(releaseFixture(), testRepo(), apps)).toBe(true);
     expect(authorizedRelease(releaseFixture({}, 2), testRepo(), apps)).toBe(false);
-    expect(authorizedRelease(releaseFixture({ tags: releaseFixture().tags.filter(t => t[0] !== 'a') }), testRepo(), apps)).toBe(false);
+    expect(
+      authorizedRelease(
+        releaseFixture({ tags: releaseFixture().tags.filter((t) => t[0] !== 'a') }),
+        testRepo(),
+        apps
+      )
+    ).toBe(false);
   });
   it('uses publisher namespaces and deterministic replacement order', () => {
-    const a = signed(), b = signed({ created_at: 101 }), other = signed({}, 2);
+    const a = signed(),
+      b = signed({ created_at: 101 }),
+      other = signed({}, 2);
     expect(replacements([a, b, other])).toHaveLength(2);
     expect(replacements([a, b])[0]?.id).toBe(b.id);
     const tie = signed({ content: 'same timestamp' });
@@ -33,7 +56,9 @@ describe('release authority', () => {
   });
   it('discovery preserves publisher namespaces and propagates errors', async () => {
     const repo = { ...testRepo(), maintainers: [testPubkey(), testPubkey(2)] };
-    const bridge = { request: async () => ({ status: 'ok', complete: true, events: [signed(), signed({}, 2)] }) } as unknown as WidgetBridge;
+    const bridge = {
+      request: async () => ({ status: 'ok', complete: true, events: [signed(), signed({}, 2)] }),
+    } as unknown as WidgetBridge;
     expect(await loadRepoApps(bridge, repo)).toHaveLength(2);
     const failed = { request: async () => ({ error: 'offline' }) } as unknown as WidgetBridge;
     await expect(loadRepoApps(failed, repo)).rejects.toThrow('offline');

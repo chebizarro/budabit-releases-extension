@@ -1,12 +1,13 @@
 <script lang="ts">
-  import {
-    createWidgetBridge,
-    type NostrEvent,
-    type WidgetBridge,
-  } from 'budabit-sdk';
+  import { createWidgetBridge, type NostrEvent, type WidgetBridge } from 'budabit-sdk';
   import { onMount } from 'svelte';
   import { watchHostTheme } from './lib/host-theme';
-  import { record, normalizeContext, isMaintainer as canPublish, type RepoContext } from './lib/context.js';
+  import {
+    record,
+    normalizeContext,
+    isMaintainer as canPublish,
+    type RepoContext,
+  } from './lib/context.js';
   import type { SoftwareApplication } from './lib/types.js';
   import ReleaseList from './lib/components/ReleaseList.svelte';
   import ReleaseDetail from './lib/components/ReleaseDetail.svelte';
@@ -31,6 +32,7 @@
 
   function receiveContext(input: unknown) {
     contextRevision++;
+    contextError = '';
     const next = normalizeContext(input, repoContext?.userPubkey);
     if (JSON.stringify(next) === JSON.stringify(repoContext)) return;
     repoContext = next;
@@ -76,11 +78,16 @@
       b.request('context:getRepo', {})
         .then((response) => {
           if (disposed || revision !== contextRevision) return;
-          if (record(response).error) throw new Error(String(record(response).error));
+          const error = record(response).error;
+          if (error)
+            throw new Error(
+              typeof error === 'string' ? error : 'Could not load repository context'
+            );
           receiveContext(response);
         })
         .catch((err) => {
-          if (!disposed) contextError = err instanceof Error ? err.message : String(err);
+          if (!disposed && revision === contextRevision)
+            contextError = err instanceof Error ? err.message : String(err);
         });
     }, 500);
 
@@ -130,12 +137,7 @@
       {#if contextError}<pre class="debug-log" role="alert">{contextError}</pre>{/if}
     </div>
   {:else if view === 'detail' && selectedEvent}
-    <ReleaseDetail
-      {bridge}
-      repo={repoContext}
-      releaseEvent={selectedEvent}
-      onBack={handleBack}
-    />
+    <ReleaseDetail {bridge} repo={repoContext} releaseEvent={selectedEvent} onBack={handleBack} />
   {:else if view === 'create' && isMaintainer}
     <CreateRelease
       {bridge}
@@ -219,8 +221,8 @@
   :global(body) {
     margin: 0;
     padding: 0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell,
-      sans-serif;
+    font-family:
+      -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     background: var(--host-background, var(--ext-bg));
     font-size: 14px;
     color: var(--ext-text);

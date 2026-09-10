@@ -1,201 +1,82 @@
-# budabit-releases-extension
+# Budabit Releases
 
-A [BudaBit](https://budabit.com) Smart Widget extension.
+A Svelte 5 repository-tab widget for discovering and publishing Nostr-signed software release metadata. Relay connections, account signing and storage are delegated to Budabit through `budabit-sdk@0.2.0`; private account keys never enter the widget.
 
-## What is a Smart Widget?
+## What it verifies
 
-A BudaBit Smart Widget is represented on Nostr as a **kind `30033` addressable event**. The event describes:
+- Application (`32267`) and release (`30063`) signatures, current repository owner/maintainer authorship, and exact repository/application coordinates.
+- Addressable replacement order: newest timestamp, then lowest event ID on a timestamp tie, within each publisher's namespace.
+- Pipeline run (`5401`) signer and artifact (`1063`) publisher delegation. Artifacts are selected from **one run**, not voted across historical filenames.
+- SHA-256 and optional size of an explicitly selected local file, up to 512 MiB. Creation requires a matching local copy for each selected artifact.
 
-- The widget identifier (`d` tag)
-- Widget type (`l` tag): `action` or `tool`
-- Display metadata (`image`, `icon`)
-- A launch button that points to your hosted iframe app (`button ... app ...`)
-- Declared permissions (`permission` tags)
-- Declared Nostr event kinds (`nostrKinds` tags)
+**A metadata signature is not a native/APK signature check, a signed Git tag, a reproducible-build guarantee, or proof that software is safe.** Downloads are not automatically fetched, executed or hashed. See [security and trust policy](docs/security.md).
 
-BudaBit discovers and renders widgets based on these events and enforces privileged actions based on declared permissions.
+Legacy releases without an exact application `a` link, or applications linked only by a repository URL/display name, are excluded rather than presented as trusted releases.
 
-## Quick Start
+## Develop and verify
 
-```bash
-pnpm install
-pnpm dev        # Start dev server at http://localhost:5173
-pnpm build      # Build for production
-pnpm test       # Run unit tests
-pnpm e2e        # Run end-to-end tests
-pnpm verify     # Full CI: lint → typecheck → coverage → e2e
+Requirements: Node **22.12+**, pnpm **8.15.0** (pinned in `packageManager`).
+
+```sh
+pnpm install --frozen-lockfile
+pnpm dev                    # localhost:5173; normally embedded by Budabit
+pnpm test                   # signed fixtures and domain regressions
+pnpm typecheck              # Svelte-check, including component logic
+pnpm test:coverage          # domain TypeScript coverage
+pnpm build                  # packages/iframe-app/dist/index.html
+pnpm exec playwright install chromium  # explicit one-time browser setup
+pnpm e2e                    # builds and tests production HTML in a controlled host fixture
+pnpm verify                 # lint, Svelte-check, coverage, build, browser tests
 ```
 
-## Bridge Protocol
+To use an already installed Chromium, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` for `pnpm e2e`. The host fixture runs at `localhost:5179/test-host/`; automated tests fulfill its iframe navigation with the freshly built production HTML. Tests use disposable fixture identities and intercept external HTTP; they do not publish to real relays. `test-host/` is a separate development entrypoint and is not included in the production HTML.
 
-BudaBit uses an action-based postMessage protocol between the host and your widget iframe:
+Unit coverage measures executable domain TypeScript, not uninstrumented Svelte markup/CSS. Gates are 95% lines/statements/functions and 85% branches; component behavior is covered separately by Chromium flows. Coverage is not a substitute for the named trust and lifecycle regressions.
 
-- Widget → Host requests: `{ type: 'request', id, action, payload }`
-- Host → Widget responses: `{ type: 'response', id, action, payload }`
-- Host → Widget events: `{ type: 'event', action, payload }`
+## Host compatibility
 
-The `budabit-sdk` provides a typed `WidgetBridge` with:
+Use Budabit with the bridge integration introduced in host commit `c97928826` or an implementation of the [same wire contract](docs/host-bridge.md). Older hosts lacking explicit query completeness show a partial-results warning and cannot initiate a new publication. The actual repo-tab surface is supported; it must not be assumed identical to ordinary `WidgetFrame`.
 
-- `request(action, payload) → Promise<responsePayload>`
-- `onEvent(action, handler)` for host-initiated events (lifecycle: `widget:init`, `widget:mounted`, `widget:unmounting`)
-- `onRequest(action, handler)` for bidirectional "tool" widgets
+The widget declares `nostr:sign`, `nostr:publish`, `nostr:query`, `nostr:subscribe`, **`nostr:unsubscribe`**, `storage:get` and `storage:set`, with kinds `32267, 30063, 3063, 1063, 5401`.
 
-### Example: publish a note + show a toast
+## Create a release
 
-```ts
-import { createWidgetBridge, createEvent } from 'budabit-sdk';
+1. Sign in as a current repository owner/maintainer and wait for complete discovery.
+2. Choose an existing application (including its publisher) or create one under your key.
+3. Select a specific authenticated pipeline run. Verify local artifact copies, then select assets.
+4. Review identifier/version, platform and APK metadata. Asset identifier/version may legitimately differ from the release. APKs require a version code and certificate SHA-256 metadata from a trusted inspection tool; the widget does **not** validate the APK certificate itself.
+5. Submit. All fixed metadata templates are signed and checked first, then saved locally, then published in application → assets → release order.
 
-const bridge = createWidgetBridge({
-  targetWindow: window.parent,
-  targetOrigin: '*',
-  timeoutMs: 15000,
-});
+Publishing is **not atomic**. On a partial/unknown outcome, return with the same account and use **Resume publication** to resend the saved event IDs without new signatures. Local acceptance markers are not treated as proof of relay persistence. Signing timeouts do not cancel a host signer prompt, but no events are published before all signatures are verified and the journal is saved.
 
-async function publishNote(content: string) {
-  const event = createEvent(1, content, []);
-  const res = await bridge.request('nostr:publish', event);
+The same application/version under your publishing key is one addressable release, even across different channels. Changing channel replaces that release; it does not create an independent channel namespace.
 
-  if (res && typeof res === 'object' && 'error' in res) {
-    await bridge.request('ui:toast', { message: res.error, type: 'error' });
-    return;
-  }
+## Package the widget
 
-  await bridge.request('ui:toast', { message: 'Published', type: 'success' });
-}
+```sh
+pnpm build
+WIDGET_APP_URL=https://your-cdn.example/releases/index.html pnpm manifest:generate
 ```
 
-### Lifecycle Events
+Manifest generation writes unsigned kind `30033` metadata to `dist/widget/` and makes no network publication. Host the built HTML on a **separate HTTPS origin** from Budabit. Only explicitly run `widget:publish:*` commands or create a publishing tag when you intend to upload/sign/publish. Keep signer credentials in private environment/secret storage, never source files or generated public artifacts.
 
-The host sends lifecycle events at key moments:
+## Known bounds
 
-```ts
-// Receive initial context on init
-bridge.onEvent('widget:init', (payload) => {
-  console.log('Extension ID:', payload.extensionId);
-  console.log('Host version:', payload.hostVersion);
-});
+- Up to eight relays, five 100-event pages per relay, inclusive timestamp cursors. Overflow at a shared second is reported incomplete instead of silently skipping events.
+- Relay EOSE means completion of that bounded response, not global history completeness or proof that no newer revision exists elsewhere.
+- Any incomplete discovery disables new publication. Detail keeps unresolved asset IDs visible and offers retry.
+- Cached releases are hints, not application authority. See [storage](docs/storage.md).
+- Native signatures, live signer services, CDN redirects in deployment, offline/PWA behavior and large real binary downloads require separate operational verification.
 
-// Know when bridge is ready for operations
-bridge.onEvent('widget:mounted', (payload) => {
-  console.log('Mounted at:', payload.mountedAt);
-});
+## Implementation guide
 
-// Cleanup before removal
-bridge.onEvent('widget:unmounting', (payload) => {
-  console.log('Unmounting, reason:', payload.reason);
-  bridge.destroy();
-});
-```
+- [Architecture](docs/architecture.md)
+- [Bridge contract](docs/host-bridge.md)
+- [Lifecycle](docs/lifecycle.md)
+- [Security](docs/security.md)
+- [Storage](docs/storage.md)
+- [Verification evidence](docs/verification.md)
 
-## Permissions
+NIP-82 interoperability targets the published draft event `68eaa1e4cde654ba098625e83f1a6828d87849f98c756fd385a93e0d6e36c78a` (kind `30817`, identifier `82`, published 2026-08-12). This is a draft, not a claim that NIP-82 is merged into the NIPs master repository.
 
-Smart Widgets declare permissions using `permission` tags. This project defaults to:
-
-- `nostr:publish` — Publish Nostr events
-- `nostr:query` — Query events from relays
-- `nostr:subscribe` — Real-time relay subscriptions
-- `ui:toast` — Show toast notifications (rate-limited, no explicit permission needed)
-
-Declare which event kinds your widget needs via `nostrKinds` tags.
-
-## Project Structure
-
-```
-my-widget/
-├── packages/
-│   └── iframe-app/      # Svelte 5 iframe app (your widget UI)
-│       └── src/
-│           ├── App.svelte
-│           └── main.ts
-├── docs/                # Architecture and integration guides
-├── e2e/                 # Playwright E2E tests
-├── .github/workflows/   # CI pipeline
-└── [config files]
-```
-
-Your widget code lives in `packages/iframe-app/`. The `budabit-sdk` package provides the bridge, types, manifest CLI, and test utilities.
-
-### SDK Subpath Imports
-
-| Import | Contents |
-|--------|----------|
-| `budabit-sdk` | Types, WidgetBridge, signaling helpers |
-| `budabit-sdk/manifest` | Event generator, CLI utilities |
-| `budabit-sdk/testing` | MockWidgetBridge, test helpers |
-| `budabit-sdk/worker` | Worker bridge |
-
-## Publishing
-
-### Generate Manifest
-
-```bash
-pnpm manifest:generate
-```
-
-This generates a kind `30033` event JSON in `dist/widget/`.
-
-### Quick Publish to Blossom
-
-```bash
-export NOSTR_SK=your_secret_key_hex
-
-# Build, upload to Blossom, sign, and publish to relays
-pnpm widget:publish:blossom
-```
-
-### Publish to GitHub Releases
-
-```bash
-export NOSTR_SK=your_secret_key_hex
-export GITHUB_REPO=owner/repo
-export GITHUB_TAG=v1.0.0
-export GITHUB_TOKEN=your_github_token
-
-pnpm widget:publish:github
-```
-
-### Manual Publishing
-
-1. Build: `pnpm build`
-2. Host `packages/iframe-app/dist/index.html` on HTTPS
-3. Generate manifest: `pnpm manifest:generate --app-url 'https://your-cdn.com/widget/index.html'`
-4. Sign and publish the kind `30033` event (see `dist/widget/PUBLISHING.md`)
-
-### Publishing Commands
-
-| Command | Description |
-|---------|-------------|
-| `pnpm widget:build` | Build + generate manifest |
-| `pnpm widget:publish` | Build + generate + publish to relays |
-| `pnpm widget:publish:dry-run` | Full pipeline without publishing |
-| `pnpm widget:publish:blossom` | Upload to Blossom CDN + publish |
-| `pnpm widget:publish:github` | Upload to GitHub release + publish |
-
-## Testing
-
-```bash
-pnpm test              # Unit tests
-pnpm test:watch        # Watch mode
-pnpm test:coverage     # With coverage report
-pnpm test:ui           # Interactive Vitest UI
-pnpm e2e               # Playwright E2E tests
-pnpm e2e:headed        # E2E in headed browser
-pnpm e2e:debug         # E2E debug mode
-```
-
-## Documentation
-
-See `docs/` for detailed guides:
-
-- [Architecture](./docs/architecture.md) — System design
-- [Host Bridge](./docs/host-bridge.md) — Host integration guide
-- [Lifecycle Events](./docs/lifecycle.md) — Widget init, mount, cleanup
-- [Storage API](./docs/storage.md) — Persistent data storage
-- [Slot System](./docs/slots.md) — Where widgets can be mounted
-- [Manifest](./docs/manifest.md) — Kind 30033 event structure
-- [Security](./docs/security.md) — Security guidelines
-- [Quick Start](./docs/quickstart.md) — Getting started
-
-## License
-
-MIT
+License: MIT.

@@ -1,214 +1,233 @@
-import { test, expect } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+import { readFileSync } from 'node:fs';
 
-/**
- * Helper: intercept widget → host postMessage requests.
- * Call early in each test before triggering widget actions.
- */
-async function interceptRequests(page: import('@playwright/test').Page) {
-  await page.evaluate(() => {
-    (window as any).__sentRequests = [];
-    window.addEventListener('message', (event) => {
-      const data = event.data as any;
-      if (!data || typeof data !== 'object') return;
-      if (data.type !== 'request') return;
-      if (typeof data.action !== 'string') return;
-      if (typeof data.id !== 'string') return;
-      (window as any).__sentRequests.push(data);
-    });
-  });
-}
+const productionBundle = readFileSync('packages/iframe-app/dist/index.html', 'utf8');
 
-/**
- * Helper: wait for a specific request action to appear.
- */
-async function waitForRequest(page: import('@playwright/test').Page, action: string) {
-  await page.waitForFunction(
-    (act: string) => {
-      const reqs = (window as any).__sentRequests;
-      return Array.isArray(reqs) && reqs.some((m: any) => m.action === act);
-    },
-    action
+test.beforeEach(async ({ page, context }) => {
+  // Test the self-contained production artifact, not Vite's development transform.
+  await page.route('http://localhost:5179/', (route) =>
+    route.fulfill({ contentType: 'text/html', body: productionBundle })
   );
-
-  return page.evaluate((act: string) => {
-    const reqs = (window as any).__sentRequests as any[];
-    return reqs.find((m) => m.action === act) ?? null;
-  }, action);
-}
-
-/**
- * Helper: simulate a host response to a widget request.
- */
-async function respondToRequest(
-  page: import('@playwright/test').Page,
-  id: string,
-  action: string,
-  payload: unknown
-) {
-  await page.evaluate(
-    ({ id, action, payload }) => {
-      window.postMessage({ type: 'response', id, action, payload }, '*');
-    },
-    { id, action, payload }
+  await context.route('https://**/*', (route) =>
+    route.fulfill({ contentType: 'text/plain', body: 'test' })
   );
-}
-
-/**
- * Helper: simulate a host event to the widget.
- */
-async function sendHostEvent(
-  page: import('@playwright/test').Page,
-  action: string,
-  payload: unknown
-) {
-  await page.evaluate(
-    ({ action, payload }) => {
-      window.postMessage({ type: 'event', action, payload }, '*');
-    },
-    { action, payload }
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-test.describe('Extension — Rendering', () => {
-  test('should render Smart Widget UI with all controls', async ({ page }) => {
-    await page.goto('/');
-
-    await expect(page.locator('h1')).toContainText('Smart Widget');
-    await expect(page.locator('.status')).toContainText('Ready');
-    await expect(page.locator('button:has-text("Publish")')).toBeVisible();
-    await expect(page.locator('button:has-text("Show Toast")')).toBeVisible();
-    await expect(page.locator('button:has-text("Resize")')).toBeVisible();
-    await expect(page.locator('input[type="text"]')).toBeVisible();
-  });
+  await page.goto('/test-host/');
+  await expect(
+    page.frameLocator('iframe').getByRole('button', { name: 'New Release', exact: true })
+  ).toBeEnabled();
 });
 
-test.describe('Extension — Lifecycle Events', () => {
-  test('should handle widget:init event from host', async ({ page }) => {
-    await page.goto('/');
-
-    await sendHostEvent(page, 'widget:init', {
-      pubkey: 'test-pubkey-abc123',
-      relays: ['wss://relay.damus.io'],
-      hostVersion: '1.2.3',
-    });
-
-    await expect(page.locator('.status')).toContainText('Connected');
-    await expect(page.locator('.context')).toBeVisible();
-    await expect(page.locator('.context')).toContainText('test-pubkey-abc123');
-    await expect(page.locator('.context')).toContainText('1.2.3');
-    await expect(page.locator('.context')).toContainText('wss://relay.damus.io');
-  });
-
-  test('should handle context:repoUpdate event', async ({ page }) => {
-    await page.goto('/');
-
-    // Send init first so the widget is "connected"
-    await sendHostEvent(page, 'widget:init', { pubkey: 'pk', relays: [] });
-
-    await sendHostEvent(page, 'context:repoUpdate', {
-      repoPubkey: 'repo-owner-pubkey',
-      repoName: 'my-test-repo',
-      repoRelays: ['wss://relay.example.com'],
-    });
-
-    await expect(page.locator('.status')).toContainText('my-test-repo');
-  });
-
-  test('should signal ready on mount', async ({ page }) => {
-    await interceptRequests(page);
-    await page.goto('/');
-
-    // The widget should emit a widget:ready event on mount
-    await page.waitForFunction(() => {
-      // widget:ready is sent as an event, not a request — check via message listener
-      return true; // signalReady() calls postMessage directly
-    });
-  });
+test('ships a self-contained production artifact without the dev signing fixture', async ({
+  page,
+}) => {
+  expect(productionBundle).not.toContain('releaseHarness');
+  expect(productionBundle).not.toContain('fixture-publish-attempts');
+  await expect(
+    page.frameLocator('iframe').locator('script[src], link[rel=stylesheet][href]')
+  ).toHaveCount(0);
 });
 
-test.describe('Extension — Bridge Actions', () => {
-  test('should send nostr:publish request and handle response', async ({ page }) => {
-    await page.goto('/');
-    await interceptRequests(page);
-
-    await page.locator('input[type="text"]').fill('Hello from e2e!');
-    await page.locator('button:has-text("Publish")').click();
-
-    const requestMsg = await waitForRequest(page, 'nostr:publish');
-
-    expect(requestMsg).not.toBeNull();
-    expect(requestMsg.action).toBe('nostr:publish');
-    expect(typeof requestMsg.id).toBe('string');
-
-    await respondToRequest(page, requestMsg.id, 'nostr:publish', { status: 'ok' });
-
-    await expect(page.locator('.status')).toContainText('Published successfully');
-    await expect(page.locator('input[type="text"]')).toHaveValue('');
-    await expect(page.locator('.result')).toContainText('ok');
-  });
-
-  test('should send ui:toast request and handle response', async ({ page }) => {
-    await page.goto('/');
-    await interceptRequests(page);
-
-    await page.locator('button:has-text("Show Toast")').click();
-
-    const requestMsg = await waitForRequest(page, 'ui:toast');
-
-    expect(requestMsg).not.toBeNull();
-    expect(requestMsg.action).toBe('ui:toast');
-
-    await respondToRequest(page, requestMsg.id, 'ui:toast', { status: 'ok' });
-
-    await expect(page.locator('.status')).toContainText('Toast requested');
-  });
-
-  test('should send ui:resize request', async ({ page }) => {
-    await page.goto('/');
-    await interceptRequests(page);
-
-    await page.locator('button:has-text("Resize")').click();
-
-    const requestMsg = await waitForRequest(page, 'ui:resize');
-
-    expect(requestMsg).not.toBeNull();
-    expect(requestMsg.action).toBe('ui:resize');
-    expect(requestMsg.payload).toEqual({ height: 400 });
-  });
-
-  test('should handle nostr:publish error gracefully', async ({ page }) => {
-    await page.goto('/');
-    await interceptRequests(page);
-
-    await page.locator('input[type="text"]').fill('Will fail');
-    await page.locator('button:has-text("Publish")').click();
-
-    const requestMsg = await waitForRequest(page, 'nostr:publish');
-
-    await respondToRequest(page, requestMsg.id, 'nostr:publish', {
-      error: 'Permission denied: nostr:publish',
-    });
-
-    // Widget should show error state
-    await expect(page.locator('.result')).toContainText('error');
-  });
+test('ignores a delayed fallback response after a newer logout update', async ({ page }) => {
+  await page.goto('/test-host/?holdFallback=1');
+  const widget = page.frameLocator('iframe');
+  await expect(widget.getByRole('button', { name: 'New Release', exact: true })).toBeEnabled();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as unknown as { releaseHarness: { fallbackPending: boolean } }).releaseHarness
+            .fallbackPending
+      )
+    )
+    .toBe(true);
+  await page.getByRole('button', { name: 'Log out', exact: true }).click();
+  await expect(widget.getByRole('button', { name: 'New Release', exact: true })).toHaveCount(0);
+  await page.evaluate(() =>
+    (
+      window as unknown as { releaseHarness: { resolveFallback: () => void } }
+    ).releaseHarness.resolveFallback()
+  );
+  // A subsequent round-trip proves the stale response has passed through the widget.
+  await widget.locator('.release-card').click();
+  await expect(
+    widget.getByRole('heading', { name: 'Assets (1 resolved / 1 referenced)' })
+  ).toBeVisible();
+  await widget.getByRole('button', { name: '← Releases', exact: true }).click();
+  await expect(widget.getByRole('button', { name: 'New Release', exact: true })).toHaveCount(0);
 });
 
-test.describe('Extension — Backward Compatibility', () => {
-  test('should handle deprecated context:update event', async ({ page }) => {
-    await page.goto('/');
+test('shows only authorized releases, reconciles replacements and account/context changes', async ({
+  page,
+}) => {
+  const widget = page.frameLocator('iframe');
+  await expect(widget.locator('.release-card')).toHaveCount(1);
+  await expect(widget.getByText('ATTACKER RELEASE')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Replace release', exact: true }).click();
+  await expect(widget.locator('.release-card')).toHaveCount(1);
+  await expect(widget.locator('.release-card')).toContainText('Replacement notes');
+  await page.getByRole('button', { name: 'Log out', exact: true }).click();
+  await expect(widget.getByRole('button', { name: 'New Release', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Clear repository', exact: true }).click();
+  await expect(widget.getByText('Waiting for repository context…')).toBeVisible();
+  await expect(page.locator('#metrics')).toContainText('Active subscriptions: 0');
+});
 
-    await sendHostEvent(page, 'context:update', {
-      contextId: 'legacy-room-123',
-      userPubkey: 'legacy-pubkey',
-      relays: ['wss://relay.damus.io'],
-    });
-
-    // Should still show connected status via deprecated path
-    await expect(page.locator('.status')).toContainText('Connected');
+test('sanitizes notes and allows a user-activated popup without navigating the widget', async ({
+  page,
+}) => {
+  const widget = page.frameLocator('iframe');
+  await widget.locator('.release-card').click();
+  await expect(
+    widget.getByRole('heading', { name: 'Assets (1 resolved / 1 referenced)' })
+  ).toBeVisible();
+  await expect(widget.locator('.release-notes img, .release-notes script')).toHaveCount(0);
+  const popup = page.waitForEvent('popup');
+  await widget.getByRole('link', { name: 'Download', exact: true }).click();
+  const opened = await popup;
+  await expect(opened).toHaveURL('https://files.example.invalid/fixture.bin');
+  await expect(
+    widget.getByRole('heading', { name: 'Assets (1 resolved / 1 referenced)' })
+  ).toBeVisible();
+  await opened.close();
+  await widget.getByLabel('Verify local file').setInputFiles({
+    name: 'fixture.bin',
+    mimeType: 'application/octet-stream',
+    buffer: Buffer.from('test'),
   });
+  await expect(widget.getByRole('status')).toHaveText('SHA-256 matches signed metadata');
+});
+
+test('selects one verified run, pins signatures and resumes identical publication IDs', async ({
+  page,
+}) => {
+  const widget = page.frameLocator('iframe');
+  await page.getByRole('button', { name: 'Fail next publication', exact: true }).click();
+  await widget.getByRole('button', { name: 'New Release', exact: true }).click();
+  await widget
+    .getByRole('combobox', { name: 'Application', exact: true })
+    .selectOption({ index: 1 });
+  await widget.getByLabel('Version', { exact: true }).fill('2');
+  await widget
+    .getByRole('combobox', { name: 'Authenticated pipeline run', exact: true })
+    .selectOption({ index: 1 });
+  await widget.getByLabel('Verify local file').setInputFiles({
+    name: 'fixture.bin',
+    mimeType: 'application/octet-stream',
+    buffer: Buffer.from('evil'),
+  });
+  await expect(widget.getByRole('status')).toContainText('mismatch');
+  await expect(widget.getByRole('checkbox', { name: 'Include fixture.bin' })).toBeDisabled();
+  await widget.getByLabel('Verify local file').setInputFiles({
+    name: 'fixture.bin',
+    mimeType: 'application/octet-stream',
+    buffer: Buffer.from('test'),
+  });
+  await expect(widget.getByRole('status')).toHaveText('SHA-256 matches');
+  await widget.getByRole('checkbox', { name: 'Include fixture.bin' }).check();
+  await widget.getByLabel('Verify local file').setInputFiles({
+    name: 'fixture.bin',
+    mimeType: 'application/octet-stream',
+    buffer: Buffer.from('evil'),
+  });
+  await expect(widget.getByRole('checkbox', { name: 'Include fixture.bin' })).not.toBeChecked();
+  await expect(widget.getByRole('button', { name: 'Publish Release', exact: true })).toBeDisabled();
+  await widget.getByLabel('Verify local file').setInputFiles({
+    name: 'fixture.bin',
+    mimeType: 'application/octet-stream',
+    buffer: Buffer.from('test'),
+  });
+  await expect(widget.getByRole('status')).toHaveText('SHA-256 matches');
+  await widget.getByRole('checkbox', { name: 'Include fixture.bin' }).check();
+  await widget.getByRole('button', { name: 'Publish Release', exact: true }).click();
+  await expect(widget.getByRole('alert')).toContainText('Synthetic relay timeout');
+  await expect(widget.getByRole('button', { name: 'Resume publication' })).toBeEnabled();
+  await page.reload();
+  await widget.getByRole('button', { name: 'New Release', exact: true }).click();
+  await widget.getByRole('button', { name: 'Resume publication' }).click();
+  await expect(widget.locator('.release-card')).toHaveCount(2);
+  await expect(page.locator('#metrics')).toContainText('signatures: 0');
+  expect(
+    await page.evaluate(() => {
+      const ids = (window as unknown as { releaseHarness: { published: string[] } }).releaseHarness
+        .published;
+      return ids.length === 3 && ids[0] === ids[1];
+    })
+  ).toBe(true);
+});
+
+test('marks incomplete discovery and recovers without leaking subscriptions', async ({ page }) => {
+  const widget = page.frameLocator('iframe');
+  await page.getByRole('button', { name: 'Toggle partial query', exact: true }).click();
+  await page.getByRole('button', { name: 'Log out', exact: true }).click();
+  await page.getByRole('button', { name: 'Test maintainer', exact: true }).click();
+  await expect(widget.getByRole('alert')).toContainText('incomplete');
+  await expect(widget.getByRole('button', { name: 'New Release', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Toggle partial query', exact: true }).click();
+  await widget.getByRole('button', { name: 'Retry discovery' }).click();
+  await expect(widget.getByRole('button', { name: 'New Release', exact: true })).toBeEnabled();
+  await expect(page.locator('#metrics')).toContainText('Active subscriptions: 1');
+});
+
+test('keeps filenames readable and confines mobile overflow to the asset table', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const widget = page.frameLocator('iframe');
+  await widget.locator('.release-card').click();
+  await expect(widget.locator('.col-filename')).toContainText('fixture.bin');
+  const size = await widget.locator('.col-filename').boundingBox();
+  expect(size?.width).toBeGreaterThan(140);
+  expect(await widget.locator('html').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(
+    true
+  );
+  expect(
+    await widget
+      .getByRole('region', { name: /Release assets/ })
+      .evaluate((el) => el.scrollWidth > el.clientWidth)
+  ).toBe(true);
+});
+
+test('does not reuse a stale file-check result after retrying asset metadata', async ({ page }) => {
+  const widget = page.frameLocator('iframe');
+  await page.getByRole('button', { name: 'Toggle partial query', exact: true }).click();
+  await widget.locator('.release-card').click();
+  await expect(widget.getByRole('button', { name: 'Retry assets', exact: true })).toBeVisible();
+  await widget.locator('body').evaluate(() => {
+    const read = Blob.prototype.arrayBuffer;
+    let first = true;
+    Blob.prototype.arrayBuffer = async function () {
+      const bytes = await read.call(this);
+      if (first) {
+        first = false;
+        await new Promise<void>((resolve) =>
+          Object.assign(window, { releasePendingFileRead: resolve })
+        );
+      }
+      return bytes;
+    };
+  });
+  await widget
+    .getByLabel('Verify local file')
+    .setInputFiles({
+      name: 'fixture.bin',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('test'),
+    });
+  await expect
+    .poll(() => widget.locator('body').evaluate(() => 'releasePendingFileRead' in window))
+    .toBe(true);
+  await widget.getByRole('button', { name: 'Retry assets', exact: true }).click();
+  await widget
+    .getByLabel('Verify local file')
+    .setInputFiles({
+      name: 'other.bin',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('evil'),
+    });
+  await expect(widget.getByRole('status')).toContainText('mismatch');
+  await widget.locator('body').evaluate(async () => {
+    (window as unknown as { releasePendingFileRead: () => void }).releasePendingFileRead();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
+  await expect(widget.getByRole('status')).toContainText('mismatch');
 });

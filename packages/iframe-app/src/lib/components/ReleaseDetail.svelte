@@ -28,12 +28,24 @@
   let error = $state<string | null>(null);
 
   let verification = $state<Record<string, string>>({});
+  const generations = new Map<string, symbol>();
   let retry = $state(0);
   async function checkFile(asset: SoftwareAsset, file?: File) {
-    if (!file) return;
+    const generation = Symbol();
+    generations.set(asset.eventId, generation);
+    if (!file) {
+      verification[asset.eventId] = '';
+      return;
+    }
     verification[asset.eventId] = 'Checking…';
-    try { await verifyBinary(file, asset.sha256, asset.size); verification[asset.eventId] = 'SHA-256 matches signed metadata'; }
-    catch (err) { verification[asset.eventId] = err instanceof Error ? err.message : String(err); }
+    try {
+      await verifyBinary(file, asset.sha256, asset.size);
+      if (generations.get(asset.eventId) !== generation) return;
+      verification[asset.eventId] = 'SHA-256 matches signed metadata';
+    } catch (err) {
+      if (generations.get(asset.eventId) === generation)
+        verification[asset.eventId] = err instanceof Error ? err.message : String(err);
+    }
   }
 
   /** Release notes are untrusted event content: parse as markdown, sanitize the HTML. */
@@ -67,7 +79,10 @@
         error = err instanceof Error ? err.message : String(err);
         loading = false;
       });
-    return () => { disposed = true; };
+    return () => {
+      disposed = true;
+      generations.clear();
+    };
   });
 </script>
 
@@ -90,8 +105,13 @@
     <div class="release-content">
       <div class="release-headline">
         <h2>{release.version}</h2>
-        <p style="overflow-wrap: anywhere">Verified metadata publisher: <code>{release.pubkey}</code></p>
-        <p>Signature verification does not check downloaded bytes or native/APK signatures. Verify a local copy below before use.</p>
+        <p style="overflow-wrap: anywhere">
+          Verified metadata publisher: <code>{release.pubkey}</code>
+        </p>
+        <p>
+          Signature verification does not check downloaded bytes or native/APK signatures. Verify a
+          local copy below before use.
+        </p>
         <div class="release-meta">
           <span>{formatDate(release.createdAt)}</span>
           {#if release.appId}
@@ -117,15 +137,29 @@
       {/if}
 
       <section class="artifacts-section">
-        <h3>Assets ({release.assets.length} resolved / {release.assetEventIds.length} referenced)</h3>
+        <h3>
+          Assets ({release.assets.length} resolved / {release.assetEventIds.length} referenced)
+        </h3>
         {#if release.unresolvedAssetIds.length || !release.complete}
-          <p role="alert">Some asset metadata could not be resolved or relay results were incomplete. <button onclick={() => retry++}>Retry assets</button></p>
-          {#each release.unresolvedAssetIds as id}<p style="overflow-wrap: anywhere"><code>{id}</code> — unresolved</p>{/each}
+          <p role="alert">
+            Some asset metadata could not be resolved or relay results were incomplete. <button
+              onclick={() => retry++}>Retry assets</button
+            >
+          </p>
+          {#each release.unresolvedAssetIds as id}<p style="overflow-wrap: anywhere">
+              <code>{id}</code> — unresolved
+            </p>{/each}
         {/if}
         {#if release.assets.length === 0}
           <p class="no-artifacts">No verified asset metadata is currently available.</p>
         {:else}
-          <div class="table-wrap">
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex (The scrollable asset region needs keyboard focus for horizontal scrolling.) -->
+          <div
+            class="table-wrap"
+            role="region"
+            aria-label="Release assets (scroll horizontally on small screens)"
+            tabindex="0"
+          >
             <table class="artifact-table">
               <thead>
                 <tr>
@@ -146,7 +180,8 @@
                         href={assetDownloadUrl(asset)}
                         target="_blank"
                         rel="noreferrer"
-                        title="Download {asset.filename}">{asset.filename}</a>
+                        title="Download {asset.filename}">{asset.filename}</a
+                      >
                       {#if asset.variant}
                         <span class="variant-label">{asset.variant}</span>
                       {/if}
@@ -156,10 +191,20 @@
                     <td class="col-mime">{asset.mimeType}</td>
                     <td class="col-hash" title={asset.sha256}>{shortHash(asset.sha256)}</td>
                     <td class="col-dl">
-                      <a class="btn-download" href={assetDownloadUrl(asset)} target="_blank" rel="noreferrer">
+                      <a
+                        class="btn-download"
+                        href={assetDownloadUrl(asset)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
                         Download
                       </a>
-                      <label>Verify local file <input type="file" onchange={(e) => void checkFile(asset, e.currentTarget.files?.[0])} /></label>
+                      <label
+                        >Verify local file <input
+                          type="file"
+                          onchange={(e) => void checkFile(asset, e.currentTarget.files?.[0])}
+                        /></label
+                      >
                       <span role="status">{verification[asset.eventId] ?? ''}</span>
                     </td>
                   </tr>
@@ -335,13 +380,25 @@
     padding: 0;
   }
 
-  .markdown-body :global(h1) { font-size: 1.15rem; }
-  .markdown-body :global(h2) { font-size: 1.05rem; }
-  .markdown-body :global(h3) { font-size: 0.95rem; }
-  .markdown-body :global(h4) { font-size: 0.9rem; }
+  .markdown-body :global(h1) {
+    font-size: 1.15rem;
+  }
+  .markdown-body :global(h2) {
+    font-size: 1.05rem;
+  }
+  .markdown-body :global(h3) {
+    font-size: 0.95rem;
+  }
+  .markdown-body :global(h4) {
+    font-size: 0.9rem;
+  }
 
-  .markdown-body :global(> :first-child) { margin-top: 0; }
-  .markdown-body :global(> :last-child) { margin-bottom: 0; }
+  .markdown-body :global(> :first-child) {
+    margin-top: 0;
+  }
+  .markdown-body :global(> :last-child) {
+    margin-bottom: 0;
+  }
 
   .markdown-body :global(p) {
     margin: 0.5em 0;
@@ -435,6 +492,7 @@
 
   .artifact-table {
     width: 100%;
+    min-width: 850px;
     border-collapse: collapse;
     font-size: 0.85rem;
   }
@@ -465,6 +523,7 @@
 
   .col-filename {
     font-family: monospace;
+    min-width: 10rem;
     word-break: break-all;
   }
 

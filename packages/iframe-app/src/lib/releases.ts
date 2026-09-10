@@ -38,7 +38,11 @@ export async function queryEvents(
   filter: Record<string, unknown>
 ): Promise<NostrEvent[]> {
   const response = await queryAll(bridge, relays, filter);
-  if (!response.complete) throw new Error(response.errors?.join('; ') || 'Discovery is incomplete (relay timeout, pagination bound, or older host). Retry before publishing.');
+  if (!response.complete)
+    throw new Error(
+      response.errors?.join('; ') ||
+        'Discovery is incomplete (relay timeout, pagination bound, or older host). Retry before publishing.'
+    );
   return response.events;
 }
 
@@ -81,9 +85,17 @@ function deriveFilename(event: NostrEvent): string {
 export function parseAsset(event: NostrEvent): SoftwareAsset | null {
   const sha256 = tagValue(event, 'x');
   const mimeType = tagValue(event, 'm');
-  if (event.kind !== ASSET_KIND || !verifiedEvent(event) || !sha256 || !HEX_KEY.test(sha256) || !mimeType ||
-      !tagValue(event, 'i') || !tagValue(event, 'version') ||
-      (tagValue(event, 'url') && !safeAssetUrl(tagValue(event, 'url')))) return null;
+  if (
+    event.kind !== ASSET_KIND ||
+    !verifiedEvent(event) ||
+    !sha256 ||
+    !HEX_KEY.test(sha256) ||
+    !mimeType ||
+    !tagValue(event, 'i') ||
+    !tagValue(event, 'version') ||
+    (tagValue(event, 'url') && !safeAssetUrl(tagValue(event, 'url')))
+  )
+    return null;
 
   const sizeStr = tagValue(event, 'size');
   const vcStr = tagValue(event, 'version_code');
@@ -95,7 +107,10 @@ export function parseAsset(event: NostrEvent): SoftwareAsset | null {
     url: tagValue(event, 'url'),
     mimeType,
     sha256,
-    size: sizeStr !== undefined && /^\d+$/.test(sizeStr) && Number.isSafeInteger(Number(sizeStr)) ? Number(sizeStr) : undefined,
+    size:
+      sizeStr !== undefined && /^\d+$/.test(sizeStr) && Number.isSafeInteger(Number(sizeStr))
+        ? Number(sizeStr)
+        : undefined,
     version: tagValue(event, 'version') ?? '',
     platforms: tagValues(event, 'f'),
     minPlatformVersion: tagValue(event, 'min_platform_version'),
@@ -103,7 +118,10 @@ export function parseAsset(event: NostrEvent): SoftwareAsset | null {
     variant: tagValue(event, 'variant'),
     commitId: tagValue(event, 'commit'),
     minAllowedVersion: tagValue(event, 'min_allowed_version'),
-    versionCode: vcStr !== undefined && /^\d+$/.test(vcStr) && Number.isSafeInteger(Number(vcStr)) ? Number(vcStr) : undefined,
+    versionCode:
+      vcStr !== undefined && /^\d+$/.test(vcStr) && Number.isSafeInteger(Number(vcStr))
+        ? Number(vcStr)
+        : undefined,
     apkCertificateHashes: tagValues(event, 'apk_certificate_hash'),
     filename: deriveFilename(event),
   };
@@ -160,13 +178,13 @@ export async function loadRepoApps(
 ): Promise<SoftwareApplication[]> {
   const relays = getRelays(repo.repoRelays);
 
-  const authors = [
-    ...new Set([repo.repoPubkey, ...(repo.maintainers ?? [])].filter(Boolean)),
-  ] as string[];
+  const authors = [...new Set([repo.repoPubkey, ...repo.maintainers].filter(Boolean))] as string[];
 
   // Query by authors so a replacement removing the repo link can revoke it.
   const results = await queryEvents(bridge, relays, { kinds: [APP_KIND], authors });
-  return replacements(results).filter(event => authorizedApplication(event, repo)).map(parseApplication);
+  return replacements(results)
+    .filter((event) => authorizedApplication(event, repo))
+    .map(parseApplication);
 }
 
 // ── Release data loading ─────────────────────────────────────────────────────
@@ -179,21 +197,25 @@ export async function loadReleaseDetail(
   repo: RepoContext,
   releaseEvent: NostrEvent
 ): Promise<SoftwareRelease> {
-  if (!verifiedEvent(releaseEvent) || !repo.maintainers.includes(releaseEvent.pubkey)) throw new Error('Release is not signed by a current maintainer');
+  if (!verifiedEvent(releaseEvent) || !repo.maintainers.includes(releaseEvent.pubkey))
+    throw new Error('Release is not signed by a current maintainer');
   const relays = normalizeRelays([
-    ...releaseEvent.tags.filter(t => t[0] === 'e').map(t => t[2]), ...getRelays(repo.repoRelays),
+    ...releaseEvent.tags.filter((t) => t[0] === 'e').map((t) => t[2]),
+    ...getRelays(repo.repoRelays),
   ]).slice(0, 8);
   const appId = tagValue(releaseEvent, 'i') ?? '';
   const version =
-    tagValue(releaseEvent, 'version') ??
-    tagValue(releaseEvent, 'd')?.split('@').pop() ??
-    'unknown';
+    tagValue(releaseEvent, 'version') ?? tagValue(releaseEvent, 'd')?.split('@').pop() ?? 'unknown';
   const dTag = tagValue(releaseEvent, 'd') ?? `${appId}@${version}`;
   const channel = tagValue(releaseEvent, 'c') ?? 'main';
-  const assetEventIds = [...new Set(releaseEvent.tags
-    .filter((tag) => tag[0] === 'e')
-    .map((tag) => tag[1])
-    .filter((id): id is string => Boolean(id)))];
+  const assetEventIds = [
+    ...new Set(
+      releaseEvent.tags
+        .filter((tag) => tag[0] === 'e')
+        .map((tag) => tag[1])
+        .filter((id): id is string => Boolean(id))
+    ),
+  ];
 
   let assets: SoftwareAsset[] = [];
   let complete = true;
@@ -219,7 +241,7 @@ export async function loadReleaseDetail(
     releaseNotes: releaseEvent.content,
     assetEventIds,
     assets,
-    unresolvedAssetIds: assetEventIds.filter(id => !assets.some(a => a.eventId === id)),
+    unresolvedAssetIds: assetEventIds.filter((id) => !assets.some((a) => a.eventId === id)),
     complete,
     createdAt: releaseEvent.created_at,
   };
@@ -269,12 +291,18 @@ export function buildAssetEvent(opts: {
   variant?: string;
 }): Record<string, unknown> {
   const artifact = opts.artifact;
-  if (!HEX_KEY.test(artifact.sha256) || !safeAssetUrl(artifact.url)) throw new Error('Asset needs a valid SHA-256 and HTTPS URL');
+  if (!HEX_KEY.test(artifact.sha256) || !safeAssetUrl(artifact.url))
+    throw new Error('Asset needs a valid SHA-256 and HTTPS URL');
   if (!artifact.mimeType.includes('/')) throw new Error('Asset needs a MIME type');
-  if (artifact.size !== undefined && (!Number.isSafeInteger(artifact.size) || artifact.size < 0)) throw new Error('Invalid asset size');
-  if (artifact.mimeType === 'application/vnd.android.package-archive' &&
-      (!Number.isSafeInteger(artifact.versionCode) || (artifact.versionCode ?? -1) < 0 ||
-       !artifact.apkCertificateHashes?.length || artifact.apkCertificateHashes.some(h => !HEX_KEY.test(h)))) {
+  if (artifact.size !== undefined && (!Number.isSafeInteger(artifact.size) || artifact.size < 0))
+    throw new Error('Invalid asset size');
+  if (
+    artifact.mimeType === 'application/vnd.android.package-archive' &&
+    (!Number.isSafeInteger(artifact.versionCode) ||
+      (artifact.versionCode ?? -1) < 0 ||
+      !artifact.apkCertificateHashes?.length ||
+      artifact.apkCertificateHashes.some((h) => !HEX_KEY.test(h)))
+  ) {
     throw new Error('APK requires version_code and apk_certificate_hash metadata');
   }
   const tags: string[][] = [
@@ -296,7 +324,8 @@ export function buildAssetEvent(opts: {
   if (artifact.versionCode !== undefined) tags.push(['version_code', String(artifact.versionCode)]);
   for (const hash of artifact.apkCertificateHashes ?? []) tags.push(['apk_certificate_hash', hash]);
   if (artifact.minPlatformVersion) tags.push(['min_platform_version', artifact.minPlatformVersion]);
-  if (artifact.targetPlatformVersion) tags.push(['target_platform_version', artifact.targetPlatformVersion]);
+  if (artifact.targetPlatformVersion)
+    tags.push(['target_platform_version', artifact.targetPlatformVersion]);
 
   return {
     kind: ASSET_KIND,
@@ -319,7 +348,8 @@ export function buildReleaseEvent(opts: {
   relayHint?: string;
   platforms?: string[];
 }): Record<string, unknown> {
-  if (!HEX_KEY.test(opts.appPubkey) || !opts.appId.trim() || !opts.version.trim()) throw new Error('Invalid application coordinate or version');
+  if (!HEX_KEY.test(opts.appPubkey) || !opts.appId.trim() || !opts.version.trim())
+    throw new Error('Invalid application coordinate or version');
   const tags: string[][] = [
     ['a', `32267:${opts.appPubkey}:${opts.appId}`, opts.relayHint ?? ''],
     ['d', `${opts.appId}@${opts.version}`],
@@ -327,7 +357,7 @@ export function buildReleaseEvent(opts: {
     ['version', opts.version],
     ['c', opts.channel],
     ...opts.assetEventIds.map((id) => ['e', id, opts.relayHint ?? '']),
-    ...[...new Set(opts.platforms ?? [])].map(platform => ['f', platform]),
+    ...[...new Set(opts.platforms ?? [])].map((platform) => ['f', platform]),
   ];
 
   return {

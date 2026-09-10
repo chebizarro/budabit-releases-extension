@@ -9,11 +9,9 @@ describe('budabit-sdk consumer integration', () => {
     const bridge = createMockWidgetBridge();
     const event: NostrEvent = releaseFixture({ tags: [['version', '1.0.0']] });
 
-    const pending = queryEvents(
-      bridge as unknown as WidgetBridge,
-      ['wss://relay.example'],
-      { kinds: [30063] }
-    );
+    const pending = queryEvents(bridge as unknown as WidgetBridge, ['wss://relay.example'], {
+      kinds: [30063],
+    });
     const request = bridge.sentMessages[0];
     if (!request || request.type !== 'request') throw new Error('Expected a query request');
     bridge.respondTo(request.id, { status: 'ok', complete: true, events: [event] });

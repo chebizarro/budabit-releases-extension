@@ -9,7 +9,7 @@ export const LEGACY_ARTIFACT_KIND = 1063;
 
 /** Standard release channels (NIP-82 Appendix B) */
 export const CHANNELS = ['main', 'beta', 'nightly', 'dev'] as const;
-export type Channel = (typeof CHANNELS)[number] | string;
+export type Channel = string;
 
 /** Platform identifiers (NIP-82 Appendix A) */
 export const PLATFORMS = [

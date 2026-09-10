@@ -32,6 +32,15 @@ export default tseslint.config(
     ...tseslint.configs.disableTypeChecked,
   },
   {
+    files: ['**/test-host/**/*.ts'],
+    // Disposable wire-fixture payloads are intentionally raw; production code keeps typed linting.
+    ...tseslint.configs.disableTypeChecked,
+    rules: {
+      ...tseslint.configs.disableTypeChecked.rules,
+      '@typescript-eslint/no-non-null-assertion': 'off',
+    },
+  },
+  {
     ignores: [
       '**/dist/',
       '**/build/',
