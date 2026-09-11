@@ -7,7 +7,7 @@
 - title: Releases
 - slot: `repo-tab`, label Releases, path `releases`
 - app URL: `WIDGET_APP_URL`, defaulting to `http://localhost:5173` for development
-- permissions: `nostr:sign`, `nostr:publish`, `nostr:query`, `nostr:subscribe`, `nostr:unsubscribe`, `storage:get`, `storage:set`
+- permissions: `nostr:sign`, `nostr:publish`, `nostr:query`, `nostr:subscribe`, `nostr:unsubscribe`, `storage:get`, `storage:set`, `storage:compareAndSet`
 - Nostr kinds: `32267`, `30063`, `3063`, `1063`, `5401`
 
 Each permission/kind is emitted as an individual `permission`/`nostrKinds` tag. The launch `button` tag carries the app URL. Production URLs must be HTTPS and should use an origin separate from Budabit.

@@ -35,9 +35,9 @@ Unit coverage measures executable domain TypeScript, not uninstrumented Svelte m
 
 ## Host compatibility
 
-Use Budabit with the bridge integration introduced in `c97928826` **and the independent relay-page fix in `a8716cfb9`**, or an implementation of the [same wire contract](docs/host-bridge.md). `c97928826` alone could falsely report completeness because the shared Welshman loader deduplicated across relay pages. Older hosts lacking explicit query completeness show a partial-results warning and cannot initiate a new publication. The actual repo-tab surface is supported; it must not be assumed identical to ordinary `WidgetFrame`.
+Use Budabit with bridge integration `c97928826`, independent relay-page fix `a8716cfb9`, **and atomic recovery storage `28ba443db`**, or an implementation of the [same wire contract](docs/host-bridge.md). `c97928826` alone could falsely report completeness because the shared Welshman loader deduplicated across relay pages. Older hosts lacking explicit query completeness show a partial-results warning and cannot initiate a new publication. Without atomic storage support, creation/recovery fails closed before signing; browsing remains available. Atomic storage requires Web Locks on the host origin (HTTPS or localhost). The actual repo-tab surface is supported; it must not be assumed identical to ordinary `WidgetFrame`.
 
-The widget declares `nostr:sign`, `nostr:publish`, `nostr:query`, `nostr:subscribe`, **`nostr:unsubscribe`**, `storage:get` and `storage:set`, with kinds `32267, 30063, 3063, 1063, 5401`.
+The widget declares `nostr:sign`, `nostr:publish`, `nostr:query`, `nostr:subscribe`, **`nostr:unsubscribe`**, `storage:get`, `storage:set` and **`storage:compareAndSet`**, with kinds `32267, 30063, 3063, 1063, 5401`. Deploy the updated permission manifest as well as the HTML, and close/reload older widget and Budabit tabs before publishing; older code may still perform unconditional journal writes.
 
 ## Create a release
 
@@ -50,6 +50,8 @@ The widget declares `nostr:sign`, `nostr:publish`, `nostr:query`, `nostr:subscri
 Publishing is **not atomic**. On a partial/unknown outcome, return with the same account and use **Resume publication** to resend the saved event IDs without new signatures. Local acceptance markers are not treated as proof of relay persistence. Signing timeouts do not cancel a host signer prompt, but no events are published before all signatures are verified and the journal is saved.
 
 Every publication attempt, including same-session retries, re-discovers current application authority. A saved application event participates in replacement reconciliation; it cannot override a newer revocation. Incomplete discovery or lost authority blocks publication. Invalid recovery data offers **Retry recovery** and a confirmed **Discard local recovery data** action. Discard affects only this repository/account's journal, does not undo published events, and loses identical-ID retry capability for that batch.
+
+There is **one active recovery batch per repository/account**. Every preparation gets a distinct batch ID, and its initial save atomically claims an empty slot. Concurrent creators may both finish signing, but only the winner can start publication. Progress saves, completion and discard compare the exact observed storage revision; stale sessions cannot overwrite/delete a later batch or recreate a cleared slot. A conflict reloads recovery state and requires a new user action, including fresh discard confirmation. Existing valid journals remain resumable without new signatures.
 
 The same application/version under your publishing key is one addressable release, even across different channels. Changing channel replaces that release; it does not create an independent channel namespace.
 

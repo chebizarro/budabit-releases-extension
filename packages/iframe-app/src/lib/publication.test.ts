@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import type { NostrEvent, WidgetBridge } from 'budabit-sdk';
 import type { EventTemplate } from 'nostr-tools';
 import {
@@ -7,6 +8,7 @@ import {
   loadJournal,
   discardJournal,
   requestOk,
+  JournalRecoveryError,
   type ReleaseDraft,
 } from './publication.js';
 import { buildAssetEvent, tagValue, tagValues } from './releases.js';
@@ -37,6 +39,8 @@ const draft = (): ReleaseDraft => ({
 });
 function host() {
   let stored: unknown = null;
+  const revision = () =>
+    stored === null ? null : createHash('sha256').update(JSON.stringify(stored)).digest('hex');
   const calls: string[] = [],
     published: string[] = [];
   let viewer = testPubkey(),
@@ -52,7 +56,13 @@ function host() {
         return { status: 'ok', repoContext: { ...testRepo(), userPubkey: viewer } };
       if (action === 'nostr:sign')
         return { status: 'ok', event: signed(payload as unknown as EventTemplate, signer) };
-      if (action === 'storage:get') return { status: 'ok', data: stored };
+      if (action === 'storage:get')
+        return { status: 'ok', data: structuredClone(stored), revision: revision(), atomic: true };
+      if (action === 'storage:compareAndSet') {
+        if (payload.expectedRevision !== revision()) return { status: 'conflict' };
+        stored = structuredClone(payload.data);
+        return { status: 'ok', revision: revision() };
+      }
       if (action === 'storage:set') {
         stored = structuredClone(payload.data);
         return { status: 'ok' };
@@ -72,6 +82,7 @@ function host() {
     calls,
     published,
     setStored: (v: unknown) => (stored = v),
+    getStored: () => structuredClone(stored),
     setViewer: (v: string) => (viewer = v),
     setSigner: (v: number) => (signer = v),
     fail: (v: boolean) => (failPublish = v),
@@ -83,6 +94,84 @@ function host() {
 }
 
 describe('NIP-82 publication', () => {
+  it('requires atomic snapshots before signing and never offers unpinned discard', async () => {
+    const h = host();
+    for (const override of [
+      { atomic: undefined },
+      { revision: 'bad' },
+      { revision: null, data: {} },
+    ]) {
+      const bridge = {
+        request: async (action: string, p: unknown) => {
+          const result = await h.b.request(action, p);
+          return action === 'storage:get' ? { ...record(result), ...override } : result;
+        },
+      } as unknown as WidgetBridge;
+      await expect(preparePublication(bridge, testRepo(), draft())).rejects.toThrow(
+        'Atomic release recovery'
+      );
+    }
+    expect(h.calls).not.toContain('nostr:sign');
+    await expect(discardJournal(h.b, testRepo(), '')).rejects.toThrow('another session');
+    expect(h.calls).not.toContain('storage:compareAndSet');
+    const broken = {
+      request: async () => {
+        throw new Error('storage unavailable');
+      },
+    } as unknown as WidgetBridge;
+    const error = await loadJournal(broken, testRepo()).catch((error) => error);
+    expect(error).not.toBeInstanceOf(JournalRecoveryError);
+    expect(error).not.toHaveProperty('revision');
+  });
+
+  it('restores legacy journals without resigning and rejects malformed batch identities', async () => {
+    const h = host();
+    const original = await preparePublication(h.b, testRepo(), draft());
+    const legacy = record(h.getStored());
+    delete legacy.batchId;
+    h.setStored(legacy);
+    const loaded = (await loadJournal(h.b, testRepo()))!;
+    expect(loaded.batchId).toBe(`legacy:${original.events.at(-1)!.id}`);
+    const signatures = h.calls.filter((c) => c === 'nostr:sign').length;
+    for (const batchId of ['', 2, 'x'.repeat(129)]) {
+      h.setStored({ ...legacy, batchId });
+      await expect(loadJournal(h.b, testRepo())).rejects.toThrow('invalid');
+    }
+    h.setStored(legacy);
+    await publishJournal(h.b, testRepo(), loaded);
+    expect(h.published).toEqual(original.events.map((e) => e.id));
+    expect(h.calls.filter((c) => c === 'nostr:sign')).toHaveLength(signatures);
+  });
+
+  it('retains an initial journal after a lost storage acknowledgement and fails closed on malformed confirmations', async () => {
+    const h = host();
+    const uncertain = {
+      request: async (action: string, p: unknown) => {
+        const result = await h.b.request(action, p);
+        if (action === 'storage:compareAndSet') throw new Error('lost storage acknowledgement');
+        return result;
+      },
+    } as unknown as WidgetBridge;
+    await expect(preparePublication(uncertain, testRepo(), draft())).rejects.toThrow(
+      'lost storage acknowledgement'
+    );
+    expect(h.published).toEqual([]);
+    const saved = (await loadJournal(h.b, testRepo()))!;
+    const malformed = {
+      request: async (action: string, p: unknown) =>
+        action === 'storage:compareAndSet' ? { status: 'ok' } : h.b.request(action, p),
+    } as unknown as WidgetBridge;
+    await expect(publishJournal(malformed, testRepo(), saved)).rejects.toThrow(
+      'saved recovery revision'
+    );
+    await expect(discardJournal(malformed, testRepo(), saved.revision!)).rejects.toThrow('removal');
+    await expect(
+      publishJournal(h.b, testRepo(), { ...saved, revision: undefined })
+    ).rejects.toThrow('another session');
+    expect(h.published).toEqual([]);
+    await publishJournal(h.b, testRepo(), saved);
+    expect(h.published).toEqual(saved.events.map((e) => e.id));
+  });
   it.each([false, true])(
     'reconciles newer application revocation on restore and same-session retry (embedded=%s)',
     async (newApplication) => {
@@ -114,7 +203,7 @@ describe('NIP-82 publication', () => {
     h.setApps([], false);
     const calls = h.calls.length;
     await expect(publishJournal(h.b, testRepo(), journal)).rejects.toThrow('incomplete');
-    expect(h.calls.slice(calls)).not.toContain('storage:set');
+    expect(h.calls.slice(calls)).not.toContain('storage:compareAndSet');
     expect(h.published).toEqual([]);
   });
   it('rechecks application linkage before signatures when creation outlives list discovery', async () => {
@@ -128,23 +217,26 @@ describe('NIP-82 publication', () => {
   it('discards only the pinned recovery key and refuses changed or aborted context', async () => {
     const h = host();
     const journal = await preparePublication(h.b, testRepo(), draft());
-    h.setStored(journal);
     h.setViewer(testPubkey(2));
-    const before = h.calls.filter((c) => c === 'storage:set').length;
-    await expect(discardJournal(h.b, testRepo())).rejects.toThrow('account changed');
-    expect(h.calls.filter((c) => c === 'storage:set')).toHaveLength(before);
+    const before = h.calls.filter((c) => c === 'storage:compareAndSet').length;
+    await expect(discardJournal(h.b, testRepo(), journal.revision!)).rejects.toThrow(
+      'account changed'
+    );
+    expect(h.calls.filter((c) => c === 'storage:compareAndSet')).toHaveLength(before);
     h.setViewer(testPubkey());
     const aborted = new AbortController();
     aborted.abort();
-    await expect(discardJournal(h.b, testRepo(), aborted.signal)).rejects.toThrow();
+    await expect(
+      discardJournal(h.b, testRepo(), journal.revision!, aborted.signal)
+    ).rejects.toThrow();
     const payloads: unknown[] = [];
     const bridge = {
       request: async (action: string, payload: unknown) => {
-        if (action === 'storage:set') payloads.push(payload);
+        if (action === 'storage:compareAndSet') payloads.push(payload);
         return h.b.request(action, payload);
       },
     } as unknown as WidgetBridge;
-    await discardJournal(bridge, testRepo());
+    await discardJournal(bridge, testRepo(), journal.revision!);
     expect(payloads).toEqual([
       {
         key: `release-publication-v1:${testPubkey()}`,
@@ -152,6 +244,7 @@ describe('NIP-82 publication', () => {
         expectedRepoAddress: testRepo().repoAddress,
         expectedPubkey: testPubkey(),
         data: null,
+        expectedRevision: journal.revision,
       },
     ]);
     expect(await loadJournal(h.b, testRepo())).toBeNull();
@@ -192,6 +285,7 @@ describe('NIP-82 publication', () => {
     await expect(
       publishJournal(h.b, testRepo(), { ...journal, repoAddress: 'other' })
     ).rejects.toThrow('scope changed');
+    h.setStored(null);
     const existing = await preparePublication(h.b, testRepo(), {
       ...draft(),
       newApplication: false,

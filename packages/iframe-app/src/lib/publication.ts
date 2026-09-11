@@ -24,13 +24,40 @@ export interface ReleaseDraft {
 }
 export interface PublicationJournal {
   schema: 1;
+  batchId: string;
   repoAddress: string;
   publisher: string;
   events: NostrEvent[];
   accepted: string[];
+  /** Host storage token, held in memory only; never persisted inside the batch. */
+  revision?: string;
 }
 const JOURNAL_KEY = 'release-publication-v1';
 const journalKey = (repo: RepoContext) => `${JOURNAL_KEY}:${repo.userPubkey}`;
+
+export class JournalConflictError extends Error {
+  constructor() {
+    super('Recovery changed in another session. Refresh and review the current saved publication.');
+  }
+}
+
+/** Invalid data still has a pinned discard target; transport failures do not. */
+export class JournalRecoveryError extends Error {
+  constructor(
+    message: string,
+    readonly revision: string
+  ) {
+    super(message);
+  }
+}
+
+const isRevision = (value: unknown): value is string =>
+  typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+
+function expectedRevision(journal: PublicationJournal): string {
+  if (!isRevision(journal.revision)) throw new JournalConflictError();
+  return journal.revision;
+}
 
 export async function requestOk(
   bridge: WidgetBridge,
@@ -38,6 +65,7 @@ export async function requestOk(
   payload: unknown
 ): Promise<Record<string, unknown>> {
   const response = record(await bridge.request(action, payload));
+  if (response.status === 'conflict') throw new JournalConflictError();
   if (typeof response.error === 'string') throw new Error(response.error);
   if (response.status !== 'ok') throw new Error(`Unexpected or incomplete ${action} response`);
   return response;
@@ -119,6 +147,10 @@ export async function preparePublication(
     relayHint: relays[0],
     platforms: frozen.artifacts.flatMap((a) => a.platforms ?? []),
   });
+  // Fail before signer prompts on older hosts or an already occupied slot. Two
+  // concurrent creators may both sign, but only the atomic empty-slot claim wins.
+  const snapshot = await readJournalSnapshot(bridge, repo, signal);
+  if (snapshot.revision !== null) throw new JournalConflictError();
   const events: NostrEvent[] = [];
   for (let index = 0; index <= templates.length; index++) {
     const template =
@@ -147,12 +179,13 @@ export async function preparePublication(
   }
   const journal: PublicationJournal = {
     schema: 1,
+    batchId: crypto.randomUUID(),
     repoAddress: repo.repoAddress,
     publisher: repo.userPubkey,
     events,
     accepted: [],
   };
-  await saveJournal(bridge, repo, journal, signal);
+  await saveJournal(bridge, repo, journal, null, signal);
   return journal;
 }
 
@@ -160,15 +193,53 @@ async function saveJournal(
   bridge: WidgetBridge,
   repo: RepoContext,
   journal: PublicationJournal,
+  revision: string | null,
+  signal?: AbortSignal
+) {
+  const { schema, batchId, repoAddress, publisher, events, accepted } = journal;
+  const data = { schema, batchId, repoAddress, publisher, events, accepted };
+  const next = await replaceJournal(bridge, repo, revision, data, signal);
+  if (!isRevision(next)) throw new Error('Host did not confirm the saved recovery revision');
+  journal.revision = next;
+}
+
+async function replaceJournal(
+  bridge: WidgetBridge,
+  repo: RepoContext,
+  revision: string | null,
+  data: unknown,
   signal?: AbortSignal
 ) {
   await assertActive(bridge, repo, signal);
-  await requestOk(bridge, 'storage:set', {
+  const response = await requestOk(bridge, 'storage:compareAndSet', {
     key: journalKey(repo),
     repoScoped: true,
     ...scope(repo),
-    data: JSON.parse(JSON.stringify(journal)) as unknown,
+    expectedRevision: revision,
+    data: JSON.parse(JSON.stringify(data)) as unknown,
   });
+  return response.revision;
+}
+
+async function readJournalSnapshot(bridge: WidgetBridge, repo: RepoContext, signal?: AbortSignal) {
+  await assertActive(bridge, repo, signal);
+  const response = await requestOk(bridge, 'storage:get', {
+    key: journalKey(repo),
+    repoScoped: true,
+    ...scope(repo),
+    withRevision: true,
+  });
+  signal?.throwIfAborted();
+  if (
+    response.atomic !== true ||
+    (response.revision !== null && !isRevision(response.revision)) ||
+    (response.revision === null && response.data !== null)
+  ) {
+    throw new Error(
+      'Atomic release recovery storage is required; update Budabit before publishing'
+    );
+  }
+  return { data: response.data, revision: response.revision };
 }
 
 export async function loadJournal(
@@ -176,13 +247,19 @@ export async function loadJournal(
   repo: RepoContext,
   signal?: AbortSignal
 ): Promise<PublicationJournal | null> {
-  const response = await requestOk(bridge, 'storage:get', {
-    key: journalKey(repo),
-    repoScoped: true,
-    ...scope(repo),
-  });
-  if (response.data == null) return null;
-  return validateJournal(bridge, repo, response.data, signal);
+  const snapshot = await readJournalSnapshot(bridge, repo, signal);
+  if (snapshot.revision === null) return null;
+  try {
+    const journal = await validateJournal(bridge, repo, snapshot.data, signal);
+    journal.revision = snapshot.revision;
+    return journal;
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw new JournalRecoveryError(
+      error instanceof Error ? error.message : String(error),
+      snapshot.revision
+    );
+  }
 }
 
 async function validateJournal(
@@ -196,6 +273,8 @@ async function validateJournal(
     value.schema !== 1 ||
     value.repoAddress !== repo.repoAddress ||
     value.publisher !== repo.userPubkey ||
+    (value.batchId !== undefined &&
+      (typeof value.batchId !== 'string' || !value.batchId || value.batchId.length > 128)) ||
     !Array.isArray(value.events) ||
     value.events.length < 2 ||
     value.events.length > 52
@@ -222,6 +301,9 @@ async function validateJournal(
     throw new Error('Stored publication has inconsistent asset/application links');
   return {
     schema: 1,
+    // Previously saved schema-1 journals have no batch ID. Keep their signed IDs;
+    // their exact storage revision protects the first conditional migration.
+    batchId: typeof value.batchId === 'string' ? value.batchId : `legacy:${release.id}`,
     repoAddress: repo.repoAddress,
     publisher: repo.userPubkey,
     events: verified,
@@ -241,9 +323,12 @@ export async function publishJournal(
     throw new Error('Publication scope changed');
   // Always validate here as well as on restore: a same-session retry can outlive
   // an application revocation. Pin the independently verified batch across awaits.
+  const revision = expectedRevision(journal);
   const current = await validateJournal(bridge, repo, journal, signal);
-  journal.events = current.events;
-  journal.accepted = [];
+  // Check ownership before any remote write, and before every subsequent progress
+  // update/cleanup. Never recreate a slot removed or replaced by another session.
+  await saveJournal(bridge, repo, current, revision, signal);
+  Object.assign(journal, current);
   for (const event of current.events) {
     await assertActive(bridge, repo, signal);
     onProgress?.(`Publishing ${journal.accepted.length + 1} of ${journal.events.length} events…`);
@@ -260,23 +345,21 @@ export async function publishJournal(
     ) {
       throw new Error('Publication acceptance is unknown; retry the saved signed events');
     }
-    if (!journal.accepted.includes(event.id)) journal.accepted.push(event.id);
-    await saveJournal(bridge, repo, journal, signal);
+    current.accepted.push(event.id);
+    await saveJournal(bridge, repo, current, expectedRevision(current), signal);
+    Object.assign(journal, current);
   }
-  await discardJournal(bridge, repo, signal);
+  await discardJournal(bridge, repo, expectedRevision(current), signal);
 }
 
 /** Delete only local recovery state, after explicit user confirmation in the UI. */
 export async function discardJournal(
   bridge: WidgetBridge,
   repo: RepoContext,
+  revision: string,
   signal?: AbortSignal
 ) {
-  await assertActive(bridge, repo, signal);
-  await requestOk(bridge, 'storage:set', {
-    key: journalKey(repo),
-    repoScoped: true,
-    ...scope(repo),
-    data: null,
-  });
+  if (!isRevision(revision)) throw new JournalConflictError();
+  const next = await replaceJournal(bridge, repo, revision, null, signal);
+  if (next !== null) throw new Error('Host did not confirm removal of the saved recovery revision');
 }

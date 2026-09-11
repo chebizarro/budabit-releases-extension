@@ -16,7 +16,7 @@ The repo-tab host sends `widget:init`, compatible `context:update` and flat `con
 
 `name` is the exact repository `d` tag, not display text. `address` is `30617:<pubkey>:<exact-d>`; `naddr` is a distinct encoded pointer. Flat updates use `repoPubkey`, `repoName`, `repoNaddr`, `repoAddress`, `repoRelays`, `maintainers`, `userPubkey`. `context:update` wraps that in `{repo, userPubkey, relays, contextId}`. Null repository/viewer values explicitly clear state. The owner is always included in the normalized maintainer set.
 
-`widget:init.capabilities.features` exposes `nostr.queryCompleteness`, `nostr.expectedSigner` and `nostr.declaredWriteKinds`. Theme arrives through `widget:init` and `widget:themeChanged`. Do not depend on `widget:mounted`/`widget:unmounting` for repo-tab cleanup.
+`widget:init.capabilities.features` exposes `nostr.queryCompleteness`, `nostr.expectedSigner`, `nostr.declaredWriteKinds` and `storage.compareAndSet` (the latter reflects runtime Web Locks availability). Theme arrives through `widget:init` and `widget:themeChanged`. Do not depend on `widget:mounted`/`widget:unmounting` for repo-tab cleanup.
 
 ## Nostr reads
 
@@ -41,5 +41,9 @@ Declared `nostrKinds` now constrain generic signing/publication when present. Qu
 ## Storage and iframe policy
 
 Use `data`, **not `value`**, for host storage. SDK 0.2.0 declarations drift from this runtime wire format. Requests include `repoScoped:true` and `expectedRepoAddress`; journals also include `expectedPubkey`. See [storage](storage.md).
+
+Host `28ba443db` adds versioned `storage:get` (`withRevision:true` → `{status:"ok",data,revision,atomic:true}`) and separately permissioned `storage:compareAndSet` (`{key,data,expectedRevision,...scope}` → `{status:"ok",revision}` or `{status:"conflict"}`). The opaque revision is SHA-256 of the exact stored JSON bytes; null means absent. Malformed raw JSON returns a versioned invalid snapshot rather than an unpinned discard target. Missing atomic support fails closed, never falls back to ordinary `storage:set` for a journal.
+
+Conditional comparison and mutation execute together inside a host-origin, per-storage-key Web Lock. Normal writes/removal and legacy read migrations participate in the same lock; repository/account checks run again after acquiring it. No lock is held across signer or relay requests. A module-local mutex or widget-side read-then-write check is not an equivalent implementation. All relevant host/widget tabs must use the upgraded code; arbitrary direct storage mutations and old unconditioned clients are outside this protocol's guarantees.
 
 The repo-tab sandbox is `allow-scripts allow-same-origin allow-forms allow-popups allow-downloads`: no top navigation or popup sandbox escape. Serve widgets from another origin. Host messages require the expected iframe window and exact origin. The only special redirect is `https://blossom.primal.net` → `https://r2a.primal.net`; arbitrary `primal.net` substrings/suffixes are rejected. Accepted runtime origins are used for subsequent pushed events.

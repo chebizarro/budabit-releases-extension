@@ -1,5 +1,7 @@
 // Dev-only fixture entrypoint. Not imported by the production bundle. Never contacts relays.
 import { matchFilter, type Filter } from 'nostr-tools';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import { signed, releaseFixture, testRepo, testPubkey } from '../src/lib/test-fixtures.js';
 import type { NostrEvent } from 'budabit-sdk';
 
@@ -86,9 +88,35 @@ let failDiscard = false;
 const pendingAssets: (() => void)[] = [];
 const holdFallback = new URLSearchParams(location.search).has('holdFallback');
 const published: string[] = JSON.parse(sessionStorage.getItem('fixture-publish-attempts') || '[]');
-const storage = new Map<string, unknown>(
-  JSON.parse(sessionStorage.getItem('fixture-journals') || '[]')
-);
+// A shared backend for genuinely independent fixture tabs; no personal storage.
+const readStorage = () =>
+  new Map<string, unknown>(JSON.parse(localStorage.getItem('fixture-journals') || '[]'));
+const persistStorage = (storage: Map<string, unknown>) =>
+  localStorage.setItem('fixture-journals', JSON.stringify([...storage]));
+const revisionOf = (value: unknown) =>
+  value == null ? null : bytesToHex(sha256(new TextEncoder().encode(JSON.stringify(value))));
+async function storageRequest(
+  action: string,
+  p: { key: string; data?: unknown; expectedRevision?: unknown }
+) {
+  return navigator.locks.request('release-fixture-storage', () => {
+    const storage = readStorage();
+    const data = storage.get(p.key) ?? null;
+    if (action === 'storage:get')
+      return { status: 'ok', data, revision: revisionOf(data), atomic: true };
+    if (action === 'storage:compareAndSet' && p.expectedRevision !== revisionOf(data))
+      return { status: 'conflict' };
+    if (p.data === null && failDiscard) {
+      failDiscard = false;
+      return { error: 'Synthetic storage failure' };
+    }
+    if (p.data === null) storage.delete(p.key);
+    else storage.set(p.key, p.data);
+    if (p.key === 'verified-releases-v2') cacheWrites++;
+    persistStorage(storage);
+    return { status: 'ok', revision: revisionOf(p.data) };
+  });
+}
 const push = (action: string, payload: unknown) =>
   iframe.contentWindow?.postMessage({ type: 'event', action, payload }, location.origin);
 function context() {
@@ -101,7 +129,7 @@ function metrics() {
   document.querySelector('#metrics')!.textContent =
     `Active subscriptions: ${subscriptions.size}; signatures: ${signatures}; publish attempts: ${published.length}`;
 }
-window.addEventListener('message', (event) => {
+window.addEventListener('message', async (event) => {
   if (event.source !== iframe.contentWindow || event.origin !== location.origin) return;
   const message = event.data;
   if (message.action === 'widget:ready') {
@@ -150,18 +178,9 @@ window.addEventListener('message', (event) => {
       payload = { status: 'ok' };
       break;
     case 'storage:get':
-      payload = { status: 'ok', data: storage.get(p.key) ?? null };
-      break;
     case 'storage:set':
-      if (p.data === null && failDiscard) {
-        failDiscard = false;
-        payload = { error: 'Synthetic storage failure' };
-        break;
-      }
-      storage.set(p.key, p.data);
-      if (p.key === 'verified-releases-v2') cacheWrites++;
-      sessionStorage.setItem('fixture-journals', JSON.stringify([...storage]));
-      payload = { status: 'ok' };
+    case 'storage:compareAndSet':
+      payload = await storageRequest(message.action, p);
       break;
     case 'nostr:sign':
       signatures++;
@@ -267,12 +286,17 @@ Object.assign(window, {
         if (matchFilter(filter, next))
           push('nostr:subscription:event', { subscriptionId: id, event: next });
     },
-    corruptJournal() {
-      storage.set(`release-publication-v1:${repo.userPubkey}`, { schema: 'corrupt' });
-      sessionStorage.setItem('fixture-journals', JSON.stringify([...storage]));
+    async corruptJournal() {
+      await storageRequest('storage:set', {
+        key: `release-publication-v1:${repo.userPubkey}`,
+        data: { schema: 'corrupt' },
+      });
     },
     get hasJournal() {
-      return !!storage.get(`release-publication-v1:${repo.userPubkey}`);
+      return !!readStorage().get(`release-publication-v1:${repo.userPubkey}`);
+    },
+    get journal() {
+      return readStorage().get(`release-publication-v1:${repo.userPubkey}`) ?? null;
     },
     failDiscard() {
       failDiscard = true;

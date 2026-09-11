@@ -2,7 +2,31 @@
 
 The release remediation is tested without private accounts, public relay publication or executable content from the network.
 
-## Detail-effect follow-up (2026-09-11)
+## Cross-session recovery follow-up (2026-09-11)
+
+The detail correction in `87cd2fb` was independently confirmed; the new finding concerns the older single-key publication journal. Three persistent shared-backend regressions failed against that baseline: both overlapping preparations claimed the slot, a stale publication completed against a later partial batch, and stale discard succeeded. Account/repository scope alone did not protect batch ownership.
+
+The correction keeps one active batch per account/repository and adds unique batch IDs plus conditional creation, progress and deletion. Host `28ba443db` implements versioned reads and `storage:compareAndSet` under host-origin Web Locks shared across tabs; ordinary writes/removal and legacy read migrations participate too. Widget conflicts stop the stale action and reload recovery state. A refreshed batch requires a new user action and fresh discard consent. Older hosts fail closed; existing signed journals remain resumable without new signatures. This is atomic **local storage**, not atomic remote publication.
+
+Fresh verification in this follow-up:
+
+- Frozen-lockfile install and widget `pnpm verify` pass: lint, Svelte-check (**0 errors / 0 warnings**), **60 unit tests in 13 suites**, production build and **16 production-artifact Chromium tests**. Final coverage: **97.91% statements/lines, 100% functions, 88.63% branches**; gates/scope unchanged. Production HTML: **320.39 KB / 105.31 KB gzip**. The final combined browser run completed in **10.4 seconds**. Node25.2.1, pnpm8.15.0, installed Chromium; no remote CI run. The pnpm installer emits the previously recorded Node25 deprecation warning.
+- Seven shared-backend unit cases cover overlapping preparation, stale same-session resume, valid/invalid stale discard, delayed old progress/cleanup after a later batch partially publishes, same-batch retries, and distinct batch identities. Additional publication cases cover unsupported/malformed atomic responses, transport errors without discard tokens, legacy journals, invalid batch identity and lost initial storage acknowledgement. No live signer or relay I/O.
+- Two added production-browser cases use independent tabs sharing the fixture storage backend: a losing creator refreshes to the winner's batch with no signatures/publication from the losing tab; stale discard preserves the later batch, clears confirmation, and requires fresh consent. All prior live-detail/file-check regressions remain green.
+- Host: **98 focused tests in eight suites** pass, including77 bridge tests, exact scope checks after lock waits, legacy compatibility, value limits, and the real Welshman pagination regression. Targeted TypeScript compilation of the storage module/browser fixture/spec/config passes.
+- **Two host Chromium tests** pass in **1.6 seconds**, importing the production storage implementation in an isolated fixture with actual Web Locks and shared localStorage across separate same-origin tabs. Concurrent empty-slot claims yield one success and one conflict. Stale update/delete preserve the next batch; ordinary writes, removal and legacy migrations demonstrably wait for the same lock. These are not mocked lock callbacks or a module-local mutex.
+- The actual repository-tab route's rename/remount/storage browser regression was rerun and passed (**5.0 seconds**, runner6.4s), using the correct existing full Budabit development stack, a fresh anonymous context and mocked relays. This tests route/bridge wiring separately from the isolated storage-engine browser tests.
+- Session-owned warm helper: two isolated fixture clients reproduced stale confirmation after replacing batchA with batchB. The old action preservedB byte-for-byte, showed its release/batch ID and conflict notice, and removed old consent. Fresh consent then discardedB and restored creation, without extra synthetic publish attempts from the stale client. The screenshot was opened and inspected. The helper uses current development code; it is separate from production-artifact tests. No browser errors; the console contains Vite debug logs and existing `ArtifactSelector.svelte` non-reactive appId/version binding warnings. No functional failure from those warnings was reproduced. One scripted helper click was attempted before Svelte enabled the submit button (zero signer/publication calls); waiting for the actual enabled state corrected the probe. Dedicated browser and task-owned fixture server closed; existing host/watchers preserved.
+
+Deploy host `28ba443db` **in addition to** the prior bridge/pagination commits and the widget's updated `storage:compareAndSet` permission. Close/reload old host/widget tabs: arbitrary direct storage changes and old unconditional writers are outside the concurrency protocol. Browser storage remains local and can be cleared; locks do not cancel in-flight remote publication. Live signers, deployed CDN redirects, full host/PWA behavior and native signatures remain outside the verified scope.
+
+Reproduce the host storage browser gate with the full host development stack already running:
+
+```sh
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium pnpm exec playwright test --config=playwright.extension-storage.config.ts
+```
+
+## Recorded detail-effect follow-up (2026-09-11, before cross-session recovery)
 
 The re-review confirmed all seven previous findings fixed, but found that the detail-loading effect tracked the entire reactive authority snapshot. This follow-up samples the latest authority getter under Svelte `untrack` while preserving both before/after-load checks and App's replacement/revocation handling. Intended reloads also clear obsolete file-verification statuses, not just their generation tokens.
 
@@ -29,7 +53,7 @@ No Budabit host implementation changes were made for this follow-up. The **89 ho
 - Helper visual checks on the current development fixture: warm detail replacement/revocation leaves one subscription active and removes all downloads/metadata presentation; corrupt-journal confirmation is readable and successful local discard restores creation with zero publication attempts. A fresh cold 390×844 detail view keeps the filename readable, confines horizontal overflow to the asset table, and contains no media from hostile notes. Screenshots were opened and inspected. No browser errors; cold console contains only Vite connection debug messages. Both helper sessions are closed.
 - Explicit implementation formatting and both repositories' diff checks pass. Host tests emit third-party missing-sourcemap warnings; the pnpm 8 installer emits a Node 25 deprecation warning. Neither is a product failure or silently treated as a failed gate.
 
-The first-round 2026-09-10 result (40 unit tests, eight browser tests, 88 host tests; 97.55% statements/lines and 87.57% branches) is **historical**, not evidence for the seven subsequent review findings. Its “complete” assessment was reopened. Second-round implementation commits are host `a8716cfb9` and widget `de301f4`, `a4f634d`, `274c0f7`, followed by documentation/verification closeout `82551f0`. The detail-effect follow-up above supersedes that widget test/build count.
+The first-round 2026-09-10 result (40 unit tests, eight browser tests, 88 host tests; 97.55% statements/lines and 87.57% branches) is **historical**, not evidence for the seven subsequent review findings. Its “complete” assessment was reopened. Second-round implementation commits are host `a8716cfb9` and widget `de301f4`, `a4f634d`, `274c0f7`, followed by documentation/verification closeout `82551f0`. Detail-effect correction `87cd2fb` and the cross-session recovery follow-up above supersede that test/build count.
 
 Commands used:
 

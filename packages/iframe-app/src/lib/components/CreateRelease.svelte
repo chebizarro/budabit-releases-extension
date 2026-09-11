@@ -11,6 +11,8 @@
     discardJournal,
     preparePublication,
     publishJournal,
+    JournalConflictError,
+    JournalRecoveryError,
     type PublicationJournal,
   } from '../publication.js';
   import ArtifactSelector from './ArtifactSelector.svelte';
@@ -49,6 +51,8 @@
   let loadFailure = $state<'journal' | 'pipeline' | ''>('');
   let retryLoad = $state(0);
   let confirmDiscard = $state(false);
+  let recoveryRevision = $state<string | undefined>();
+  let conflict = $state('');
   const app = $derived(existingApps.find((a) => appCoordinate(a) === appChoice));
   const artifacts = $derived(pipelineData?.artifactsByRun.get(runId) ?? []);
   const canSubmit = $derived(
@@ -72,10 +76,12 @@
     journal = null;
     pipelineData = null;
     confirmDiscard = false;
+    recoveryRevision = undefined;
     loadJournal(bridge, repo, controller.signal)
       .then(async (saved) => {
         if (disposed) return;
         journal = saved;
+        recoveryRevision = saved?.revision;
         if (!saved) {
           stage = 'pipeline';
           const data = await loadPipelineArtifacts(bridge, repo);
@@ -87,6 +93,7 @@
         if (!disposed) {
           loadFailure = stage;
           error = err instanceof Error ? err.message : String(err);
+          if (err instanceof JournalRecoveryError) recoveryRevision = err.revision;
           loading = false;
         }
       });
@@ -94,15 +101,24 @@
       disposed = true;
     };
   });
+  function refreshConflict() {
+    conflict =
+      'Recovery changed in another session. Review the current recovery state before continuing.';
+    confirmDiscard = false;
+    retryLoad++;
+  }
   async function discard() {
-    if (!confirmDiscard || submitting) return;
+    if (!confirmDiscard || submitting || !recoveryRevision) return;
     submitting = true;
     const snapshot = JSON.parse(JSON.stringify(repo)) as RepoContext;
     try {
-      await discardJournal(bridge, snapshot, controller.signal);
+      await discardJournal(bridge, snapshot, recoveryRevision, controller.signal);
       if (!controller.signal.aborted) retryLoad++;
     } catch (err) {
-      if (!controller.signal.aborted) error = err instanceof Error ? err.message : String(err);
+      if (!controller.signal.aborted) {
+        if (err instanceof JournalConflictError) refreshConflict();
+        else error = err instanceof Error ? err.message : String(err);
+      }
     } finally {
       submitting = false;
     }
@@ -128,6 +144,7 @@
     if (submitting || (!resume && !canSubmit)) return;
     submitting = true;
     error = '';
+    conflict = '';
     const snapshot = JSON.parse(JSON.stringify(repo)) as RepoContext;
     try {
       if (!journal) {
@@ -150,6 +167,7 @@
           },
           controller.signal
         );
+        recoveryRevision = journal.revision;
       }
       await publishJournal(
         bridge,
@@ -160,8 +178,13 @@
       );
       if (!controller.signal.aborted) onSuccess();
     } catch (err) {
-      if (!controller.signal.aborted)
-        error = `${err instanceof Error ? err.message : String(err)}${journal ? ' Some events may already be published. Resume retries the same signed event IDs.' : ''}`;
+      if (!controller.signal.aborted) {
+        if (err instanceof JournalConflictError) refreshConflict();
+        else {
+          recoveryRevision = journal?.revision ?? recoveryRevision;
+          error = `${err instanceof Error ? err.message : String(err)}${journal ? ' Some events may already be published. Resume retries the same signed event IDs.' : ''}`;
+        }
+      }
     } finally {
       submitting = false;
       progress = '';
@@ -183,6 +206,7 @@
           signatures.
         </p>
         <p>Release: <code>{journal.events.at(-1)?.tags.find((t) => t[0] === 'd')?.[1]}</code></p>
+        <p>Batch: <code>{journal.batchId}</code></p>
         <button disabled={submitting || loading} onclick={() => void submit(true)}
           >Resume publication</button
         >
@@ -193,7 +217,7 @@
         </p>
       {/if}
       <button disabled={submitting || loading} onclick={() => retryLoad++}>Retry recovery</button>
-      {#if confirmDiscard}
+      {#if confirmDiscard && recoveryRevision}
         <p>
           Discarding local recovery data does not undo events already published. You will lose the
           saved batch for identical-ID retries.
@@ -202,7 +226,7 @@
           >Keep recovery data</button
         >
         <button disabled={submitting} onclick={() => void discard()}>Confirm discard</button>
-      {:else}
+      {:else if recoveryRevision}
         <button disabled={submitting || loading} onclick={() => (confirmDiscard = true)}
           >Discard local recovery data</button
         >
@@ -278,7 +302,7 @@
     </form>
   {/if}
   {#if progress}<p role="status">{progress}</p>{/if}
-  {#if error}<p role="alert" class="error">{error}</p>{/if}
+  {#if conflict || error}<p role="alert" class="error">{conflict} {error}</p>{/if}
 </div>
 
 <style>

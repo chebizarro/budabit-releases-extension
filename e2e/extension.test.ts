@@ -26,7 +26,7 @@ async function finishFileRead(widget: FrameLocator) {
 
 test.beforeEach(async ({ page, context }) => {
   // Test the self-contained production artifact, not Vite's development transform.
-  await page.route('http://localhost:5179/', (route) =>
+  await context.route('http://localhost:5179/', (route) =>
     route.fulfill({ contentType: 'text/html', body: productionBundle })
   );
   await context.route('https://**/*', (route) =>
@@ -303,6 +303,100 @@ test('stops same-session resume after app revocation and exposes recovery when r
       .locator('option')
   ).toHaveCount(2);
   await expect(page.locator('#metrics')).toContainText('publish attempts: 1');
+});
+
+async function fillReleaseDraft(widget: FrameLocator, version: string) {
+  await widget.getByRole('button', { name: 'New Release', exact: true }).click();
+  await widget
+    .getByRole('combobox', { name: 'Application', exact: true })
+    .selectOption({ index: 1 });
+  await widget.getByLabel('Version', { exact: true }).fill(version);
+  await widget
+    .getByRole('combobox', { name: 'Authenticated pipeline run', exact: true })
+    .selectOption({ index: 1 });
+  await widget.getByLabel('Verify local file').setInputFiles({
+    name: 'fixture.bin',
+    mimeType: 'application/octet-stream',
+    buffer: Buffer.from('test'),
+  });
+  await expect(widget.getByRole('status')).toHaveText('SHA-256 matches');
+  await widget.getByRole('checkbox', { name: 'Include fixture.bin' }).check();
+}
+
+test('refreshes a losing creator to the other tab’s saved batch without publishing it', async ({
+  page,
+  context,
+}) => {
+  const other = await context.newPage();
+  await other.goto('/test-host/');
+  const a = page.frameLocator('iframe'),
+    b = other.frameLocator('iframe');
+  // Both sessions have observed an empty recovery slot and entered creation.
+  await fillReleaseDraft(a, '2');
+  await fillReleaseDraft(b, '3');
+  await page.getByRole('button', { name: 'Fail next publication', exact: true }).click();
+  await a.getByRole('button', { name: 'Publish Release', exact: true }).click();
+  await expect(a.getByRole('alert')).toContainText('Synthetic relay timeout');
+  const saved = await page.evaluate(
+    () => (window as unknown as { releaseHarness: { journal: unknown } }).releaseHarness.journal
+  );
+  await b.getByRole('button', { name: 'Publish Release', exact: true }).click();
+  await expect(b.getByRole('alert')).toContainText('Recovery changed in another session');
+  await expect(b.getByRole('region', { name: 'Publication recovery' })).toContainText('app@2');
+  await expect(b.getByRole('button', { name: 'Resume publication', exact: true })).toBeEnabled();
+  await expect(other.locator('#metrics')).toContainText('signatures: 0; publish attempts: 0');
+  expect(
+    await other.evaluate(
+      () => (window as unknown as { releaseHarness: { journal: unknown } }).releaseHarness.journal
+    )
+  ).toEqual(saved);
+});
+
+test('rejects a stale discard confirmation and refreshes to the later batch for new consent', async ({
+  page,
+  context,
+}) => {
+  const a = page.frameLocator('iframe');
+  await fillReleaseDraft(a, '2');
+  await page.getByRole('button', { name: 'Fail next publication', exact: true }).click();
+  await a.getByRole('button', { name: 'Publish Release', exact: true }).click();
+  await expect(a.getByRole('alert')).toContainText('Synthetic relay timeout');
+  await a.getByRole('button', { name: 'Discard local recovery data', exact: true }).click();
+  await expect(a.getByRole('button', { name: 'Confirm discard', exact: true })).toBeVisible();
+
+  const other = await context.newPage();
+  await other.goto('/test-host/');
+  const b = other.frameLocator('iframe');
+  await b.getByRole('button', { name: 'New Release', exact: true }).click();
+  await b.getByRole('button', { name: 'Resume publication', exact: true }).click();
+  await expect(b.locator('.release-card')).toHaveCount(2);
+  await fillReleaseDraft(b, '3');
+  await other.getByRole('button', { name: 'Fail next publication', exact: true }).click();
+  await b.getByRole('button', { name: 'Publish Release', exact: true }).click();
+  await expect(b.getByRole('alert')).toContainText('Synthetic relay timeout');
+  const saved = await other.evaluate(
+    () => (window as unknown as { releaseHarness: { journal: unknown } }).releaseHarness.journal
+  );
+
+  await a.getByRole('button', { name: 'Confirm discard', exact: true }).click();
+  await expect(a.getByRole('alert')).toContainText('Recovery changed in another session');
+  await expect(a.getByRole('region', { name: 'Publication recovery' })).toContainText('app@3');
+  await expect(a.getByRole('button', { name: 'Confirm discard', exact: true })).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      () => (window as unknown as { releaseHarness: { journal: unknown } }).releaseHarness.journal
+    )
+  ).toEqual(saved);
+  await expect(page.locator('#metrics')).toContainText('publish attempts: 1');
+  await a.getByRole('button', { name: 'Discard local recovery data', exact: true }).click();
+  await a.getByRole('button', { name: 'Confirm discard', exact: true }).click();
+  await expect(a.getByRole('button', { name: 'Publish Release', exact: true })).toBeVisible();
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { releaseHarness: { hasJournal: boolean } }).releaseHarness.hasJournal
+    )
+  ).toBe(false);
 });
 
 test('keeps detail authority live through replacement and revocation, including delayed assets', async ({

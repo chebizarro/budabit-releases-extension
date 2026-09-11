@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security and correctness
 
+- Protect publication recovery across tabs with distinct batch identities and host-atomic compare-and-set (`28ba443db`). Initial save cannot replace an active batch; stale progress, completion and discard cannot damage a later one. Conflicts refresh recovery state and reset discard consent. Add shared-backend and real cross-tab Web Locks regressions; require the new `storage:compareAndSet` manifest permission and preserve legacy signed-ID recovery.
 - Keep asset loading and local-file checks stable during unrelated live authority updates by sampling authority without subscribing the detail effect to the whole list. Preserve replacement/revocation checks and clear canceled verification status on explicit asset retry; production-browser regressions cover input identity, query counts and delayed hash completion.
 - Correct the host completeness dependency: relay pages need isolated Welshman loader/tracker instances (`a8716cfb9`); shared-loader deduplication could conceal older history.
 - Keep application/release authority live while detail is open, update replacements and remove revoked downloads, including during delayed asset resolution.

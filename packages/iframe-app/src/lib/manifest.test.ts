@@ -39,6 +39,7 @@ describe('offline manifest generation', () => {
         'nostr:unsubscribe',
         'storage:get',
         'storage:set',
+        'storage:compareAndSet',
       ]);
       expect(event.tags.filter((t) => t[0] === 'nostrKinds').map((t) => t[1])).toEqual([
         '32267',
