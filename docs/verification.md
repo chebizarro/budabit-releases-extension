@@ -2,7 +2,24 @@
 
 The release remediation is tested without private accounts, public relay publication or executable content from the network.
 
-## Fresh second-review gates (2026-09-11)
+## Detail-effect follow-up (2026-09-11)
+
+The re-review confirmed all seven previous findings fixed, but found that the detail-loading effect tracked the entire reactive authority snapshot. This follow-up samples the latest authority getter under Svelte `untrack` while preserving both before/after-load checks and App's replacement/revocation handling. Intended reloads also clear obsolete file-verification statuses, not just their generation tokens.
+
+Three new production-artifact Chromium cases reproduced the failure before the correction:
+
+- Both unrelated release and unrelated application updates increased asset queries from **4 to 8**, detached the original file input, cleared its selection, and left a valid delayed hash at **“Checking…”**.
+- Explicit asset retry also left the canceled check at **“Checking…”**, including after the delayed read finished.
+
+With the correction, both unrelated-update cases keep **4 asset queries**, retain the original input/selection, and finish with **“SHA-256 matches signed metadata”**. Each also verifies that a subsequent real replacement resets the input/result and revocation removes downloads. Tests wait for the controller's post-event cache write before checking stability, rather than asserting before its coalesced emission. Explicit retry clears status before and after the old read finishes; the existing newer-mismatch/old-match race regression still passes.
+
+Fresh follow-up verification: `pnpm verify` passes lint, Svelte-check (**0 errors / 0 warnings**), **50 unit tests in 12 suites**, production build and **14 Chromium tests** against built HTML (5.1 seconds). Domain coverage is **97.79% statements/lines, 100% functions, 88.19% branches**; thresholds and scope are unchanged. The self-contained production HTML is **318.41 KB / 104.62 KB gzip**. Runtime remains Node 25.2.1, pnpm 8.15.0, installed Chromium.
+
+The session-owned warm browser also verified the current development fixture: a held synthetic file check survived unrelated release and application events with the original input and four asset queries, then displayed the full matching-hash result. A real replacement cleared the input/status, and application revocation removed the controls. Screenshots were opened and inspected; no browser errors, only Vite connection debug logs. The dedicated browser and newly started fixture server were closed; the existing Budabit development stack was untouched. This helper check is development-fixture evidence, separate from the production-artifact Chromium suite.
+
+No Budabit host implementation changes were made for this follow-up. The **89 host tests and actual-route browser result below are recorded second-review evidence, not newly rerun host suites**. Live accounts, public publication, deployed CDN redirects, native signatures and a full host/PWA audit remain outside the verified scope.
+
+## Recorded second-review gates (2026-09-11, before the detail-effect follow-up)
 
 - Local runtime: Node 25.2.1, pnpm 8.15.0, installed Chromium; CI is configured for Node 22.12+ compatibility via Node 22 and the pinned pnpm version. The CI service itself was not run locally.
 - Frozen-lockfile install, lint, Svelte-check (zero errors/warnings), **50 tests in 12 suites**, build and **11 production-artifact Chromium tests** pass via `pnpm verify`. The browser suite completed in 3.0 seconds.
@@ -12,7 +29,7 @@ The release remediation is tested without private accounts, public relay publica
 - Helper visual checks on the current development fixture: warm detail replacement/revocation leaves one subscription active and removes all downloads/metadata presentation; corrupt-journal confirmation is readable and successful local discard restores creation with zero publication attempts. A fresh cold 390×844 detail view keeps the filename readable, confines horizontal overflow to the asset table, and contains no media from hostile notes. Screenshots were opened and inspected. No browser errors; cold console contains only Vite connection debug messages. Both helper sessions are closed.
 - Explicit implementation formatting and both repositories' diff checks pass. Host tests emit third-party missing-sourcemap warnings; the pnpm 8 installer emits a Node 25 deprecation warning. Neither is a product failure or silently treated as a failed gate.
 
-The first-round 2026-09-10 result (40 unit tests, eight browser tests, 88 host tests; 97.55% statements/lines and 87.57% branches) is **historical**, not evidence for the seven subsequent review findings. Its “complete” assessment was reopened. Second-round implementation commits are host `a8716cfb9` and widget `de301f4`, `a4f634d`, `274c0f7`, followed by this documentation/verification closeout.
+The first-round 2026-09-10 result (40 unit tests, eight browser tests, 88 host tests; 97.55% statements/lines and 87.57% branches) is **historical**, not evidence for the seven subsequent review findings. Its “complete” assessment was reopened. Second-round implementation commits are host `a8716cfb9` and widget `de301f4`, `a4f634d`, `274c0f7`, followed by documentation/verification closeout `82551f0`. The detail-effect follow-up above supersedes that widget test/build count.
 
 Commands used:
 
@@ -44,9 +61,9 @@ The isolated `oc2-browser` warm/cold profiles are used separately for visual che
 
 Host commit `c97928826` added focused bridge/query/context/origin tests, including delayed events beyond the former 500 ms cutoff, per-relay completion, known-ID completion, aborted/late queries, pinned scope, kinds, owned unsubscribe and accepted runtime origins. Its warning-free changed-Svelte compilation is first-round evidence; this round changes no host Svelte component.
 
-`a8716cfb9` isolates the per-relay loader state and adds `nostr-query.integration.test.ts`. Its control runs the **real** shared `makeLoader` with `MockAdapter` delivery: overlapping 100-event pages give callbacks of 100/0, demonstrating the original failure. The corrected host function returns 100/100 even for concurrent bridge calls; inclusive follow-up pages return 1/51, giving all 150 unique events. It does not mock `load()` or open real relay sockets. The fresh combined host selection contains 89 tests across seven suites.
+`a8716cfb9` isolates the per-relay loader state and adds `nostr-query.integration.test.ts`. Its control runs the **real** shared `makeLoader` with `MockAdapter` delivery: overlapping 100-event pages give callbacks of 100/0, demonstrating the original failure. The corrected host function returns 100/100 even for concurrent bridge calls; inclusive follow-up pages return 1/51, giving all 150 unique events. It does not mock `load()` or open real relay sockets. The recorded second-review host selection contains 89 tests across seven suites.
 
-The existing `repository-identity-integration.spec.ts` test **“the actual extension route preserves addresses and storage through rename and remount”** passes against the actual `/git/<naddr>/extensions/identity-review` surface on the correct full development stack. It uses mocked relays, an anonymous fixture widget and a fresh browser context. A session-private Playwright config avoids the host suite's unrelated artifact cleanup/global authentication setup. This validates the real route/bridge context and storage lifecycle, not live CDN redirects or production signer services.
+The existing `repository-identity-integration.spec.ts` test **“the actual extension route preserves addresses and storage through rename and remount”** passed in the second review against the actual `/git/<naddr>/extensions/identity-review` surface on the correct full development stack. It uses mocked relays, an anonymous fixture widget and a fresh browser context. A session-private Playwright config avoids the host suite's unrelated artifact cleanup/global authentication setup. This validates the real route/bridge context and storage lifecycle, not live CDN redirects or production signer services.
 
 ## Not established by these checks
 

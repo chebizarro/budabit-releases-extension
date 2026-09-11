@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security and correctness
 
+- Keep asset loading and local-file checks stable during unrelated live authority updates by sampling authority without subscribing the detail effect to the whole list. Preserve replacement/revocation checks and clear canceled verification status on explicit asset retry; production-browser regressions cover input identity, query counts and delayed hash completion.
 - Correct the host completeness dependency: relay pages need isolated Welshman loader/tracker instances (`a8716cfb9`); shared-loader deduplication could conceal older history.
 - Keep application/release authority live while detail is open, update replacements and remove revoked downloads, including during delayed asset resolution.
 - Reuse only immutable, internally verified events and coalesce live updates; a 250-event regression now performs 250 signature checks rather than 31,875.

@@ -1,7 +1,28 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type FrameLocator } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 
 const productionBundle = readFileSync('packages/iframe-app/dist/index.html', 'utf8');
+
+async function holdNextFileRead(widget: FrameLocator) {
+  await widget.locator('body').evaluate(() => {
+    const read = Blob.prototype.arrayBuffer;
+    Blob.prototype.arrayBuffer = async function () {
+      Blob.prototype.arrayBuffer = read;
+      const bytes = await read.call(this);
+      await new Promise<void>((resolve) =>
+        Object.assign(window, { releasePendingFileRead: resolve })
+      );
+      return bytes;
+    };
+  });
+}
+
+async function finishFileRead(widget: FrameLocator) {
+  await widget.locator('body').evaluate(async () => {
+    (window as unknown as { releasePendingFileRead: () => void }).releasePendingFileRead();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
+}
 
 test.beforeEach(async ({ page, context }) => {
   // Test the self-contained production artifact, not Vite's development transform.
@@ -343,25 +364,119 @@ test('keeps filenames readable and confines mobile overflow to the asset table',
   ).toBe(true);
 });
 
+for (const kind of ['release', 'application'] as const) {
+  test(`preserves an in-progress file check across an unrelated ${kind} update`, async ({
+    page,
+  }) => {
+    const widget = page.frameLocator('iframe');
+    await widget.locator('.release-card').click();
+    const input = widget.getByLabel('Verify local file');
+    await expect(input).toBeVisible();
+    const originalInput = (await input.elementHandle())!;
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as unknown as { releaseHarness: { cacheWrites: number } }).releaseHarness
+              .cacheWrites
+        )
+      )
+      .toBeGreaterThan(0);
+    const before = await page.evaluate(() => {
+      const h = (
+        window as unknown as { releaseHarness: { assetQueries: number; cacheWrites: number } }
+      ).releaseHarness;
+      return { assetQueries: h.assetQueries, cacheWrites: h.cacheWrites };
+    });
+    expect(before.assetQueries).toBeGreaterThan(0);
+    await holdNextFileRead(widget);
+    await input.setInputFiles({
+      name: 'fixture.bin',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('test'),
+    });
+    await expect
+      .poll(() => widget.locator('body').evaluate(() => 'releasePendingFileRead' in window))
+      .toBe(true);
+    await expect(widget.getByRole('status')).toHaveText('Checking…');
+    await page.evaluate(
+      (kind) =>
+        (
+          window as unknown as {
+            releaseHarness: { addUnrelated(kind: 'release' | 'application'): void };
+          }
+        ).releaseHarness.addUnrelated(kind),
+      kind
+    );
+    // The controller's debounced cache write acknowledges processing the live event;
+    // don't assert absence of a reload before the coalesced emission has happened.
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as unknown as { releaseHarness: { cacheWrites: number } }).releaseHarness
+              .cacheWrites
+        )
+      )
+      .toBeGreaterThan(before.cacheWrites);
+    expect
+      .soft(
+        await page.evaluate(
+          () =>
+            (window as unknown as { releaseHarness: { assetQueries: number } }).releaseHarness
+              .assetQueries
+        )
+      )
+      .toBe(before.assetQueries);
+    expect.soft(await originalInput.evaluate((el) => el.isConnected)).toBe(true);
+    await expect.soft(input).toHaveValue(/fixture\.bin$/);
+    await finishFileRead(widget);
+    await expect(widget.getByRole('status')).toHaveText('SHA-256 matches signed metadata');
+    await expect(
+      widget.getByRole('heading', { name: 'Verified release', exact: true })
+    ).toBeVisible();
+
+    // Relevant changes must still invalidate the input and its verification result.
+    await page.getByRole('button', { name: 'Replace release', exact: true }).click();
+    await expect(widget.getByRole('heading', { name: 'Replacement notes' })).toBeVisible();
+    expect(await originalInput.evaluate((el) => el.isConnected)).toBe(false);
+    await expect(input).toHaveValue('');
+    await expect(widget.locator('.col-dl [role=status]')).toHaveText('');
+    await page.getByRole('button', { name: 'Revoke application', exact: true }).click();
+    await expect(widget.getByRole('alert')).toContainText('no longer authorized');
+    await expect(input).toHaveCount(0);
+    await expect(widget.getByRole('link', { name: 'Download', exact: true })).toHaveCount(0);
+  });
+}
+
+test('clears a canceled file-check status on explicit asset retry', async ({ page }) => {
+  const widget = page.frameLocator('iframe');
+  await page.getByRole('button', { name: 'Toggle partial query', exact: true }).click();
+  await widget.locator('.release-card').click();
+  await expect(widget.getByRole('button', { name: 'Retry assets', exact: true })).toBeVisible();
+  await holdNextFileRead(widget);
+  await widget.getByLabel('Verify local file').setInputFiles({
+    name: 'fixture.bin',
+    mimeType: 'application/octet-stream',
+    buffer: Buffer.from('test'),
+  });
+  await expect
+    .poll(() => widget.locator('body').evaluate(() => 'releasePendingFileRead' in window))
+    .toBe(true);
+  await expect(widget.getByRole('status')).toHaveText('Checking…');
+  await widget.getByRole('button', { name: 'Retry assets', exact: true }).click();
+  await expect(widget.getByLabel('Verify local file')).toHaveValue('');
+  await expect.soft(widget.getByRole('status')).toHaveText('');
+  await finishFileRead(widget);
+  await expect(widget.getByRole('status')).toHaveText('');
+});
+
 test('does not reuse a stale file-check result after retrying asset metadata', async ({ page }) => {
   const widget = page.frameLocator('iframe');
   await page.getByRole('button', { name: 'Toggle partial query', exact: true }).click();
   await widget.locator('.release-card').click();
   await expect(widget.getByRole('button', { name: 'Retry assets', exact: true })).toBeVisible();
-  await widget.locator('body').evaluate(() => {
-    const read = Blob.prototype.arrayBuffer;
-    let first = true;
-    Blob.prototype.arrayBuffer = async function () {
-      const bytes = await read.call(this);
-      if (first) {
-        first = false;
-        await new Promise<void>((resolve) =>
-          Object.assign(window, { releasePendingFileRead: resolve })
-        );
-      }
-      return bytes;
-    };
-  });
+  await holdNextFileRead(widget);
   await widget.getByLabel('Verify local file').setInputFiles({
     name: 'fixture.bin',
     mimeType: 'application/octet-stream',
@@ -371,15 +486,13 @@ test('does not reuse a stale file-check result after retrying asset metadata', a
     .poll(() => widget.locator('body').evaluate(() => 'releasePendingFileRead' in window))
     .toBe(true);
   await widget.getByRole('button', { name: 'Retry assets', exact: true }).click();
+  await expect(widget.getByRole('status')).toHaveText('');
   await widget.getByLabel('Verify local file').setInputFiles({
     name: 'other.bin',
     mimeType: 'application/octet-stream',
     buffer: Buffer.from('evil'),
   });
   await expect(widget.getByRole('status')).toContainText('mismatch');
-  await widget.locator('body').evaluate(async () => {
-    (window as unknown as { releasePendingFileRead: () => void }).releasePendingFileRead();
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-  });
+  await finishFileRead(widget);
   await expect(widget.getByRole('status')).toContainText('mismatch');
 });

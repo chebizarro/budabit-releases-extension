@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { releaseNotesHtml } from '../markdown.js';
   import { verifyBinary } from '../binary.js';
   import type { SoftwareAsset } from '../types.js';
@@ -24,6 +25,10 @@
   }
 
   let { bridge, repo, releaseEvent, currentAuthority, onBack }: Props = $props();
+
+  // Check the latest authority before/after loading without subscribing the load
+  // effect to unrelated list emissions. App handles replacement and revocation.
+  const readAuthority = () => untrack(() => currentAuthority());
 
   let release = $state<SoftwareRelease | null>(null);
   let loading = $state(true);
@@ -69,8 +74,9 @@
     loading = true;
     error = null;
     release = null;
+    verification = {};
 
-    loadReleaseDetail(bridge, repo, releaseEvent, currentAuthority)
+    loadReleaseDetail(bridge, repo, releaseEvent, readAuthority)
       .then((r) => {
         if (disposed) return;
         release = r;

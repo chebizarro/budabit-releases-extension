@@ -78,6 +78,8 @@ let viewer = repo.userPubkey,
   fail = false,
   sequence = 0;
 let signatures = 0;
+let assetQueries = 0;
+let cacheWrites = 0;
 let resolveFallback: (() => void) | undefined;
 let holdAssets = false;
 let failDiscard = false;
@@ -127,6 +129,7 @@ window.addEventListener('message', (event) => {
       payload = { status: 'ok', repoContext: hasRepo ? { ...repo, userPubkey: viewer } : null };
       break;
     case 'nostr:query':
+      if (p.filter.kinds?.includes(3063)) assetQueries++;
       payload = {
         status: 'ok',
         complete: !partial,
@@ -156,6 +159,7 @@ window.addEventListener('message', (event) => {
         break;
       }
       storage.set(p.key, p.data);
+      if (p.key === 'verified-releases-v2') cacheWrites++;
       sessionStorage.setItem('fixture-journals', JSON.stringify([...storage]));
       payload = { status: 'ok' };
       break;
@@ -226,6 +230,43 @@ document.querySelector('#revoke')!.addEventListener('click', () => {
 });
 Object.assign(window, {
   releaseHarness: {
+    get assetQueries() {
+      return assetQueries;
+    },
+    get cacheWrites() {
+      return cacheWrites;
+    },
+    addUnrelated(kind: 'release' | 'application') {
+      const next =
+        kind === 'release'
+          ? signed({
+              ...release,
+              created_at: now + 1,
+              content: 'Unrelated release',
+              tags: release.tags.map((t) =>
+                t[0] === 'd'
+                  ? ['d', 'app@unrelated']
+                  : t[0] === 'version'
+                    ? ['version', 'unrelated']
+                    : t
+              ),
+            })
+          : signed({
+              ...app,
+              created_at: now + 1,
+              tags: app.tags.map((t) =>
+                t[0] === 'd'
+                  ? ['d', 'unrelated-app']
+                  : t[0] === 'name'
+                    ? ['name', 'Unrelated application']
+                    : t
+              ),
+            });
+      data.push(next);
+      for (const [id, filter] of subscriptions)
+        if (matchFilter(filter, next))
+          push('nostr:subscription:event', { subscriptionId: id, event: next });
+    },
     corruptJournal() {
       storage.set(`release-publication-v1:${repo.userPubkey}`, { schema: 'corrupt' });
       sessionStorage.setItem('fixture-journals', JSON.stringify([...storage]));
